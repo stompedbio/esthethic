@@ -1,7 +1,4 @@
--- skeed
--- Tabs: HVH Config, HVH Extras, HVH More, Chat, Helper
--- Network use: only the Chat tab, and only to the Server URL you type in.
--- No loadstring, no obfuscation. Everything is reset when the script unloads.
+-- skeed homepage, everything comes from here
 
 local ICON = "rbxassetid://10734975692"
 
