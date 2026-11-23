@@ -342,12 +342,20 @@ local man_left  = x_aa:new_keybind("Manual Left", "Toggle", "Left")
 local man_right = x_aa:new_keybind("Manual Right", "Toggle", "Right")
 local man_back  = x_aa:new_keybind("Manual Back", "Toggle", "Down")
 
--- Movement-state desync
-local st_enable = x_aa:new_toggle("State-Based Desync", true)
-local st_stand  = x_aa:new_slider("Standing Desync", 0, 86, 86, 0, "°")
-local st_run    = x_aa:new_slider("Running Desync", 0, 86, 58, 0, "°")
-local st_crouch = x_aa:new_slider("Crouching Desync", 0, 86, 75, 0, "°")
-local st_air    = x_aa:new_slider("In-Air Desync", 0, 86, 45, 0, "°")
+-- Movement-state body yaw (real/fake angles)
+local st_enable = x_aa:new_toggle("Body Yaw By Movement", true)
+local st_stand  = x_aa:new_slider("Standing Desync Limit", 0, 86, 86, 0, "°")
+local st_run    = x_aa:new_slider("Running Desync Limit", 0, 86, 58, 0, "°")
+local st_crouch = x_aa:new_slider("Crouching Desync Limit", 0, 86, 75, 0, "°")
+local st_air    = x_aa:new_slider("In-Air Desync Limit", 0, 86, 45, 0, "°")
+local st_stand_real = x_aa:new_slider("Standing Real Body Yaw", -86, 86, 0, 0, "°")
+local st_stand_fake = x_aa:new_slider("Standing Fake Body Yaw", -86, 86, 58, 0, "°")
+local st_run_real   = x_aa:new_slider("Moving Real Body Yaw", -86, 86, 0, 0, "°")
+local st_run_fake   = x_aa:new_slider("Moving Fake Body Yaw", -86, 86, 58, 0, "°")
+local st_crouch_real = x_aa:new_slider("Crouch Real Body Yaw", -86, 86, 0, 0, "°")
+local st_crouch_fake = x_aa:new_slider("Crouch Fake Body Yaw", -86, 86, 58, 0, "°")
+local st_air_real   = x_aa:new_slider("Air Real Body Yaw", -86, 86, 0, 0, "°")
+local st_air_fake   = x_aa:new_slider("Air Fake Body Yaw", -86, 86, 45, 0, "°")
 
 -- Defensive AA
 local def_enable   = x_aa:new_toggle("Defensive AA", false)
@@ -398,20 +406,21 @@ onTick(function(tick)
         aa.set_manual(nil)
     end
 
-    -- desync by movement state
+    -- Apply independently adjustable real/fake body yaw for each movement state.
     if st_enable:get() then
         local state = movement.get_state()
-        local lim
+        local lim, realYaw, fakeYaw
         if state == "InAir" then
-            lim = st_air:get()
+            lim, realYaw, fakeYaw = st_air:get(), st_air_real:get(), st_air_fake:get()
         elseif state == "Crouching" then
-            lim = st_crouch:get()
+            lim, realYaw, fakeYaw = st_crouch:get(), st_crouch_real:get(), st_crouch_fake:get()
         elseif state == "Running" then
-            lim = st_run:get()
+            lim, realYaw, fakeYaw = st_run:get(), st_run_real:get(), st_run_fake:get()
         else
-            lim = st_stand:get()
+            lim, realYaw, fakeYaw = st_stand:get(), st_stand_real:get(), st_stand_fake:get()
         end
         aa.override_desync_limits(lim, lim)
+        aa.override_desync(realYaw, fakeYaw)
     end
 end)
 
@@ -858,8 +867,10 @@ local CFG = {
     sp_enable, sp_speed, sp_maxspd, sp_scope, sp_adapt, sp_step,
     x_fake, x_ext_on, x_ext_amt, x_fpitch,
     m_hs_id, m_hs_vol, m_hs_pitch,
-    -- New state-based hitchance controls are appended to preserve older share-code indexes.
+    -- New controls are appended to preserve older share-code indexes.
     sp_noscope, sp_crouch, sp_moving,
+    st_stand_real, st_stand_fake, st_run_real, st_run_fake,
+    st_crouch_real, st_crouch_fake, st_air_real, st_air_fake,
 }
 
 -- base64 (pure Lua)
