@@ -419,6 +419,9 @@ onTick(function(tick)
         else
             lim, realYaw, fakeYaw = st_stand:get(), st_stand_real:get(), st_stand_fake:get()
         end
+        if aa_invert:get() then
+            realYaw, fakeYaw = -realYaw, -fakeYaw
+        end
         aa.override_desync_limits(lim, lim)
         aa.override_desync(realYaw, fakeYaw)
     end
@@ -847,7 +850,7 @@ end)
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 2
+local CODE_VERSION = 3
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -867,7 +870,7 @@ local CFG = {
     sp_enable, sp_speed, sp_maxspd, sp_scope, sp_adapt, sp_step,
     x_fake, x_ext_on, x_ext_amt, x_fpitch,
     m_hs_id, m_hs_vol, m_hs_pitch,
-    -- New controls are appended to preserve older share-code indexes.
+    -- new controls are appended at the end
     sp_noscope, sp_crouch, sp_moving,
     st_stand_real, st_stand_fake, st_run_real, st_run_fake,
     st_crouch_real, st_crouch_fake, st_air_real, st_air_fake,
@@ -1094,7 +1097,7 @@ local FAQ = {
       kw = { "not shooting", "ragebot", "wont shoot", "doesnt shoot", "no fire", "shoot", "rage", "working" } },
     { q = "What does the Spread Helper do?",
       a = "It cannot remove weapon spread. It selects a hitchance for unscoped snipers, crouching, and moving, and can raise hitchance after spread misses. Optional gates can pause firing.",
-      kw = { "spread", "nospread", "helper", "inaccuracy" } },
+      kw = { "spread", "nospread", "helper", "inaccuracy", "noscope", "no-scope", "crouch", "moving", "assist", "chance" } },
     { q = "What is Defensive AA?",
       a = "HVH Extras > Advanced AA > Defensive AA. When double-tap is charged it shifts ticks and flicks pitch and yaw for 2 ticks to throw enemy resolvers off. It's off by default.",
       kw = { "defensive", "double tap", "dt", "shift", "flick" } },
