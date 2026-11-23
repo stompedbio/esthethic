@@ -904,6 +904,8 @@ local cu_size   = cur_sec:new_slider("Cursor Size", 6, 40, 14, 0, " px")
 local cu_speed  = cur_sec:new_slider("Rotation Speed", 0, 360, 120, 0, " deg/s")
 local cu_col    = cur_sec:new_colorpicker("Cursor Color", Color3.fromRGB(255, 255, 255))
 local cu_hide   = cur_sec:new_toggle("Hide Default Cursor", true)
+local cu_offx   = cur_sec:new_slider("Cursor X Offset", -60, 60, 0, 0, " px")
+local cu_offy   = cur_sec:new_slider("Cursor Y Offset", -60, 60, 0, 0, " px")
 local sc_enable = cur_sec:new_toggle("Sniper Cursor", false)
 local sc_gap    = cur_sec:new_slider("Sniper Cursor Gap", 0, 40, 8, 0, " px")
 local sc_thick  = cur_sec:new_slider("Sniper Cursor Thickness", 1, 4, 1, 0, " px")
@@ -976,19 +978,69 @@ do
         if sc_dot:get() then render.circle_filled(cx, cy, 2, col, 100) end
     end
 
+    -- mouse position: tries the pointer, then the mouse, then the engine's own value
+    local function pointer()
+        local function fromCall(fn)
+            local ok, a, b = pcall(fn)
+            if not ok then return nil end
+            if type(a) == "number" and type(b) == "number" then return a, b end
+            local isVec = pcall(function() return a.X + a.Y end)
+            if isVec then return a.X, a.Y end
+            return nil
+        end
+
+        local x, y = fromCall(input.get_pointer_position)
+        if x then return x, y, "input.get_pointer_position" end
+
+        x, y = fromCall(input.get_mouse_position)
+        if x then return x, y, "input.get_mouse_position" end
+
+        if uis then
+            x, y = fromCall(function() return uis:GetMouseLocation() end)
+            if x then return x, y, "UserInputService" end
+        end
+        return nil
+    end
+
+    local cursorDrawn = false
+
     -- registered after the main paint callback, so render.clear() there does not wipe it
     onEvent("paint", function()
         local sw, sh = render.screen_size()
         local sniperOn = sc_enable:get() and sniperScoped()
+        cursorDrawn = false
 
         if sniperOn then
             drawSniper(sw, sh)
         elseif cu_enable:get() then
-            local mx, my = input.get_pointer_position()
-            if mx and my then drawCursor(mx, my) end
+            local mx, my = pointer()
+            if not mx then
+                mx, my = sw / 2, sh / 2 -- no pointer found: draw in the middle
+            end
+            local ok, err = pcall(drawCursor, mx + cu_offx:get(), my + cu_offy:get())
+            if ok then
+                cursorDrawn = true
+            else
+                reportError("custom cursor", err)
+            end
         end
 
-        setIconHidden((cu_enable:get() and cu_hide:get() and not sniperOn) or (sniperOn and sc_hide:get()))
+        -- only hide the real cursor once ours is actually being drawn
+        setIconHidden((cursorDrawn and cu_hide:get()) or (sniperOn and sc_hide:get()))
+    end)
+
+    cur_sec:new_button("Print Cursor Info", function()
+        local sw, sh = render.screen_size()
+        local x, y, source = pointer()
+        local msg
+        if x then
+            msg = string.format("pointer %d,%d via %s | screen %dx%d | drawn: %s",
+                math.floor(x), math.floor(y), source, math.floor(sw), math.floor(sh), tostring(cursorDrawn))
+        else
+            msg = "no pointer position found, drawing in the middle of the screen"
+        end
+        client.log("[cursor] " .. msg)
+        notify("Cursor info", msg, 8, false)
     end)
 
     onEvent("shutdown", function()
@@ -1000,7 +1052,7 @@ end
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 5
+local CODE_VERSION = 6
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -1023,7 +1075,7 @@ local CFG = {
     -- new controls are appended at the end
     sp_noscope, sp_crouch, sp_moving,
     xv_wire, xv_wire_col, xv_ring, xv_wm_text, h_speed, h_spread,
-    cu_enable, cu_style, cu_size, cu_speed, cu_col, cu_hide,
+    cu_enable, cu_style, cu_size, cu_speed, cu_col, cu_hide, cu_offx, cu_offy,
     sc_enable, sc_gap, sc_thick, sc_dot, sc_col, sc_hide,
     st_stand_real, st_stand_fake, st_run_real, st_run_fake,
     st_crouch_real, st_crouch_fake, st_air_real, st_air_fake,
