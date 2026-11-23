@@ -896,11 +896,111 @@ onTick(function(tick)
     rage.override_enabled(allow)
 end)
 
+-- CURSORS: spinning custom cursor and a sniper cursor
+local cur_sec   = ttab:new_section("Cursor", "Right")
+local cu_enable = cur_sec:new_toggle("Custom Cursor", false)
+local cu_style  = cur_sec:new_combobox("Cursor Style", { "Crosshair", "Diamond", "Triangle", "Star" }, "Crosshair")
+local cu_size   = cur_sec:new_slider("Cursor Size", 6, 40, 14, 0, " px")
+local cu_speed  = cur_sec:new_slider("Rotation Speed", 0, 360, 120, 0, " deg/s")
+local cu_col    = cur_sec:new_colorpicker("Cursor Color", Color3.fromRGB(255, 255, 255))
+local cu_hide   = cur_sec:new_toggle("Hide Default Cursor", true)
+local sc_enable = cur_sec:new_toggle("Sniper Cursor", false)
+local sc_gap    = cur_sec:new_slider("Sniper Cursor Gap", 0, 40, 8, 0, " px")
+local sc_thick  = cur_sec:new_slider("Sniper Cursor Thickness", 1, 4, 1, 0, " px")
+local sc_dot    = cur_sec:new_toggle("Sniper Cursor Center Dot", true)
+local sc_col    = cur_sec:new_colorpicker("Sniper Cursor Color", Color3.fromRGB(255, 60, 70))
+local sc_hide   = cur_sec:new_toggle("Hide Game Cursor While Scoped", true)
+
+do
+    local uis = nil
+    pcall(function() uis = game:GetService("UserInputService") end)
+    local iconHidden = false
+
+    -- the real mouse icon is only hidden while one of our cursors is drawn
+    local function setIconHidden(hidden)
+        if hidden == iconHidden or not uis then return end
+        iconHidden = hidden
+        pcall(function() uis.MouseIconEnabled = not hidden end)
+    end
+
+    local function sniperScoped()
+        local wep = weapon.get_active()
+        if not wep then return false end
+        local kind = string.lower(tostring(wep.type or ""))
+        return string.find(kind, "sniper", 1, true) ~= nil and weapon.is_scoped()
+    end
+
+    -- regular polygon, or a star when step is 2: connect vertex k to vertex k + step
+    local function polygon(cx, cy, r, startAngle, n, step, col)
+        local xs, ys = {}, {}
+        for k = 0, n - 1 do
+            local ang = startAngle + k * (2 * math.pi / n)
+            xs[k] = cx + math.cos(ang) * r
+            ys[k] = cy + math.sin(ang) * r
+        end
+        for k = 0, n - 1 do
+            local j = (k + step) % n
+            render.line(xs[k], ys[k], xs[j], ys[j], col, 2, 100)
+        end
+    end
+
+    local function drawCursor(cx, cy)
+        local r = cu_size:get()
+        local col = cu_col:get()
+        local a = math.rad((globals.realtime() * cu_speed:get()) % 360)
+        local style = cu_style:get()
+
+        if style == "Crosshair" then
+            for k = 0, 3 do
+                local ang = a + k * (math.pi / 2)
+                render.line(cx + math.cos(ang) * r * 0.35, cy + math.sin(ang) * r * 0.35,
+                    cx + math.cos(ang) * r, cy + math.sin(ang) * r, col, 2, 100)
+            end
+        elseif style == "Diamond" then
+            polygon(cx, cy, r, a + math.pi / 4, 4, 1, col)
+        elseif style == "Triangle" then
+            polygon(cx, cy, r, a - math.pi / 2, 3, 1, col)
+        else
+            polygon(cx, cy, r, a - math.pi / 2, 5, 2, col)
+        end
+        render.circle_filled(cx, cy, 2, col, 100)
+    end
+
+    local function drawSniper(sw, sh)
+        local cx, cy = sw / 2, sh / 2
+        local gap, th, col = sc_gap:get(), sc_thick:get(), sc_col:get()
+        render.line(0, cy, cx - gap, cy, col, th, 100)
+        render.line(cx + gap, cy, sw, cy, col, th, 100)
+        render.line(cx, 0, cx, cy - gap, col, th, 100)
+        render.line(cx, cy + gap, cx, sh, col, th, 100)
+        if sc_dot:get() then render.circle_filled(cx, cy, 2, col, 100) end
+    end
+
+    -- registered after the main paint callback, so render.clear() there does not wipe it
+    onEvent("paint", function()
+        local sw, sh = render.screen_size()
+        local sniperOn = sc_enable:get() and sniperScoped()
+
+        if sniperOn then
+            drawSniper(sw, sh)
+        elseif cu_enable:get() then
+            local mx, my = input.get_pointer_position()
+            if mx and my then drawCursor(mx, my) end
+        end
+
+        setIconHidden((cu_enable:get() and cu_hide:get() and not sniperOn) or (sniperOn and sc_hide:get()))
+    end)
+
+    onEvent("shutdown", function()
+        setIconHidden(false)
+    end)
+end
+
 -- CONFIG SHARING: "Show Code" / "Load Code" (codes start with SKEED)
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 4
+local CODE_VERSION = 5
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -923,6 +1023,8 @@ local CFG = {
     -- new controls are appended at the end
     sp_noscope, sp_crouch, sp_moving,
     xv_wire, xv_wire_col, xv_ring, xv_wm_text, h_speed, h_spread,
+    cu_enable, cu_style, cu_size, cu_speed, cu_col, cu_hide,
+    sc_enable, sc_gap, sc_thick, sc_dot, sc_col, sc_hide,
     st_stand_real, st_stand_fake, st_run_real, st_run_fake,
     st_crouch_real, st_crouch_fake, st_air_real, st_air_fake,
 }
@@ -1164,6 +1266,9 @@ local FAQ = {
     { q = "How do I use the global chat?",
       a = "Open the Chat tab. Enter the Server URL and a nickname, then turn on Connect To Global Chat. Type in Message and press Send Message. Messages show inside the Chat tab under Global Chat. It never goes to the Roblox chat.",
       kw = { "chat", "global", "connect", "server", "url", "nickname", "message", "send" } },
+    { q = "How do the cursors work?",
+      a = "HVH More > Cursor. Custom Cursor draws a spinning crosshair, diamond, triangle or star at your mouse and hides the normal one. Sniper Cursor draws its own scope reticle while a sniper is scoped in, in place of the game's. Size, speed, gap and colors are adjustable.",
+      kw = { "cursor", "mouse", "pointer", "sniper", "scope", "reticle", "rotate", "spin" } },
     { q = "What extra visuals are there?",
       a = "HVH Extras > Extra Visuals has Enemy Wire Boxes, Target Ring, path prediction and an editable Watermark Text. HVH More > HUD can show speed and state, plus spread and inaccuracy, under your crosshair.",
       kw = { "visual", "wire", "box", "ring", "watermark", "esp", "hud", "indicator", "speed" } },
@@ -1665,7 +1770,7 @@ x_misc:new_button("Run API Self-Test", function()
         "chams.get_materials", "sounds.override_hitsound", "sounds.override_killsound",
         "sounds.get_hitsound_names", "clantag.set", "clantag.reset",
         "render.text", "render.rect_filled", "render.measure_text", "render.screen_size", "render.clear",
-        "render3d.box", "render3d.line", "render3d.sphere", "render3d.wire_box", "render3d.ring",
+        "render3d.box", "render3d.line", "render3d.sphere", "render3d.wire_box", "render3d.ring", "render.line", "render.circle_filled", "input.get_pointer_position",
         "weapon.get_spread", "weapon.get_inaccuracy", "sounds.play_hitsound", "sounds.play_killsound",
         "http.json_encode", "http.json_decode", "chat.on_message", "client.latency",
         "client.get_camera_angles_deg", "globals.realtime", "globals.tickcount",
