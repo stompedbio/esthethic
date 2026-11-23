@@ -1,4 +1,7 @@
--- skeed homepage, everything comes from here
+-- skeed
+-- Tabs: HVH Config, HVH Extras, HVH More, Chat, Helper
+-- Network use: only the Chat tab, and only to the Server URL you type in.
+-- No loadstring, no obfuscation. Everything is reset when the script unloads.
 
 local ICON = "rbxassetid://10734975692"
 
@@ -1122,7 +1125,7 @@ end
 -- GLOBAL CHAT (talks to your relay server, NOT the Roblox chat)
 -- Put the address of your relay server here (see skeed-chat-server/server.js),
 -- e.g. "https://skeed-chat-server.onrender.com". It can also be typed in the menu.
-local DEFAULT_SERVER_URL = ""
+local DEFAULT_SERVER_URL = "https://skeed.onrender.com"
 local POLL_SECONDS = 4
 
 local ctab       = menu.new_tab("Chat", ICON)
