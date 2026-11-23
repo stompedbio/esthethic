@@ -388,7 +388,7 @@ local xv_hat_r     = x_vis:new_slider("China Hat Radius", 0.5, 4, 1.6, 1, " stud
 local xv_hat_h     = x_vis:new_slider("China Hat Height", 0.3, 3, 0.9, 1, " studs")
 local xv_hat_spin  = x_vis:new_slider("China Hat Spin Speed", 0, 5, 1, 1, "")
 local xv_hat_flip  = x_vis:new_toggle("Flip China Hat (if upside down)", false)
-local xv_hat_off   = x_vis:new_slider("China Hat Height Offset", -10, 10, 0, 1, " studs")
+local xv_hat_off   = x_vis:new_slider("China Hat Height Offset", -10, 10, 6, 1, " studs")
 
 -- where the hat sits: head center and half the head height, plus where it came from
 local function hatAnchor()
