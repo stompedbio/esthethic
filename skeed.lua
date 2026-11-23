@@ -378,6 +378,10 @@ local xv_watermark = x_vis:new_toggle("Watermark", true)
 local xv_stats     = x_vis:new_toggle("Hit/Miss Stats", true)
 local xv_predict   = x_vis:new_toggle("Enemy Path Prediction", false)
 local xv_pred_tick = x_vis:new_slider("Prediction Ticks", 4, 32, 16, 0, " ticks")
+local xv_wire      = x_vis:new_toggle("Enemy Wire Boxes", false)
+local xv_wire_col  = x_vis:new_colorpicker("Wire Box Color", Color3.fromRGB(255, 80, 80))
+local xv_ring      = x_vis:new_toggle("Target Ring", false)
+local xv_wm_text   = x_vis:new_textbox("Watermark Text", "skeed.$win", "skeed.$win")
 
 -- Utilities
 local u_log = x_misc:new_toggle("Log Shots To Console", true)
@@ -385,6 +389,12 @@ x_misc:new_button("Reset Resolver State", function()
     for k in pairs(targetState) do targetState[k] = nil end
     rage.reset_resolver_state()
     notify("Resolver", "Resolver state reset", 2, false)
+end)
+x_misc:new_button("Test Hitsound", function()
+    sounds.play_hitsound()
+end)
+x_misc:new_button("Test Killsound", function()
+    sounds.play_killsound()
 end)
 x_misc:new_button("Reset Stats", function()
     -- handled below via the stats table
@@ -522,7 +532,9 @@ onEvent("paint", function()
     if xv_watermark:get() then
         local fps = math.floor(1 / math.max(globals.frametime(), 0.001))
         local ping = math.floor(client.latency() * 1000)
-        local txt = string.format("skeed.$win | %d fps | %d ms", fps, ping)
+        local label = tostring(xv_wm_text:get() or "")
+        if label == "" then label = "skeed.$win" end
+        local txt = label .. string.format(" | %d fps | %d ms", fps, ping)
         local size = render.measure_text(txt, 14)
         render.text(sw - size.X - 20, 12, txt, color(255, 255, 255), 14, true)
     end
@@ -548,6 +560,30 @@ onEvent("paint", function()
                     render3d.line(now, future, Color3.fromRGB(0, 255, 120), 2)
                     render3d.sphere(future, 0.5, Color3.fromRGB(0, 255, 120), 0.2)
                 end
+            end
+        end
+    end
+
+    -- wire boxes around enemies
+    if xv_wire:get() then
+        local col = xv_wire_col:get()
+        for _, enemy in ipairs(entity.get_enemies()) do
+            if entity.is_alive(enemy) then
+                local pos = entity.get_player_position(enemy)
+                if pos then
+                    render3d.wire_box(CFrame.new(pos), Vector3.new(3, 5.5, 3), col, 0.2, true)
+                end
+            end
+        end
+    end
+
+    -- ring under the current ragebot target
+    if xv_ring:get() then
+        local target = rage.get_target()
+        if target and target.player then
+            local pos = entity.get_player_position(target.player)
+            if pos then
+                render3d.ring(pos - Vector3.new(0, 2.8, 0), 3, 0.4, Color3.fromRGB(255, 60, 60), 0.2, true)
             end
         end
     end
@@ -581,6 +617,8 @@ local h_cross   = t_hud:new_toggle("Crosshair Indicators", true)
 local h_keys    = t_hud:new_toggle("Keybind List", true)
 local h_hitlog  = t_hud:new_toggle("On-Screen Hitlog", true)
 local h_weapon  = t_hud:new_toggle("Weapon Info", true)
+local h_speed   = t_hud:new_toggle("Speed And State (needs Crosshair Indicators)", true)
+local h_spread  = t_hud:new_toggle("Spread And Inaccuracy (needs Crosshair Indicators)", false)
 
 -- MORE: smart AA (fake lag by state)
 onTick(function(tick)
@@ -690,6 +728,12 @@ onEvent("paint", function()
             ind(string.format("DT %d/14", rage.get_double_tap_charge()), color(255, 120, 120))
         end
         ind("DMG " .. tostring(rage.get_min_damage()), color(255, 255, 255))
+        if h_speed:get() then
+            ind(string.format("%s %d", tostring(movement.get_state()), math.floor(movement.get_speed() or 0)), color(200, 200, 200))
+        end
+        if h_spread:get() then
+            ind(string.format("SPREAD %.2f  INACC %.2f", weapon.get_spread() or 0, weapon.get_inaccuracy() or 0), color(255, 200, 120))
+        end
         if rage.is_force_baim() then ind("BAIM", color(255, 200, 60)) end
         if rage.is_force_safe_point() then ind("SAFE", color(120, 200, 255)) end
         if aa.get_manual() then ind("MAN " .. aa.get_manual():upper(), color(255, 200, 60)) end
@@ -770,6 +814,12 @@ t_cfg:new_button("Load Preset: Max", function()
     applySnapshot(presets.Max)
     notify("Preset", "Loaded Max", 2, false)
 end)
+for _, style in ipairs({ "Static", "Sway", "Spin", "Random", "5-Way" }) do
+    t_cfg:new_button("AA Style: " .. style, function()
+        aa_mod:set(style == "Static" and "Disabled" or style)
+        notify("Preset", "AA style: " .. style, 2, false)
+    end)
+end
 t_cfg:new_button("Save Custom Slot", function()
     database.write("hvh_custom_slot", snapshot())
     database.flush()
@@ -850,7 +900,7 @@ end)
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 3
+local CODE_VERSION = 4
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -872,6 +922,7 @@ local CFG = {
     m_hs_id, m_hs_vol, m_hs_pitch,
     -- new controls are appended at the end
     sp_noscope, sp_crouch, sp_moving,
+    xv_wire, xv_wire_col, xv_ring, xv_wm_text, h_speed, h_spread,
     st_stand_real, st_stand_fake, st_run_real, st_run_fake,
     st_crouch_real, st_crouch_fake, st_air_real, st_air_fake,
 }
@@ -1113,6 +1164,9 @@ local FAQ = {
     { q = "How do I use the global chat?",
       a = "Open the Chat tab. Enter the Server URL and a nickname, then turn on Connect To Global Chat. Type in Message and press Send Message. Messages show inside the Chat tab under Global Chat. It never goes to the Roblox chat.",
       kw = { "chat", "global", "connect", "server", "url", "nickname", "message", "send" } },
+    { q = "What extra visuals are there?",
+      a = "HVH Extras > Extra Visuals has Enemy Wire Boxes, Target Ring, path prediction and an editable Watermark Text. HVH More > HUD can show speed and state, plus spread and inaccuracy, under your crosshair.",
+      kw = { "visual", "wire", "box", "ring", "watermark", "esp", "hud", "indicator", "speed" } },
     { q = "How do cloud configs work?",
       a = "Chat tab > Cloud Configs. Press Upload My Config to get a short ID and send that ID to a friend. They paste it in Config ID and press Download Config. It needs the Server URL set. Keybinds are not included.",
       kw = { "cloud", "config id", "upload", "download", "online config", "id" } },
@@ -1611,7 +1665,8 @@ x_misc:new_button("Run API Self-Test", function()
         "chams.get_materials", "sounds.override_hitsound", "sounds.override_killsound",
         "sounds.get_hitsound_names", "clantag.set", "clantag.reset",
         "render.text", "render.rect_filled", "render.measure_text", "render.screen_size", "render.clear",
-        "render3d.box", "render3d.line", "render3d.sphere",
+        "render3d.box", "render3d.line", "render3d.sphere", "render3d.wire_box", "render3d.ring",
+        "weapon.get_spread", "weapon.get_inaccuracy", "sounds.play_hitsound", "sounds.play_killsound",
         "http.json_encode", "http.json_decode", "chat.on_message", "client.latency",
         "client.get_camera_angles_deg", "globals.realtime", "globals.tickcount",
         "input.is_typing", "json.stringify", "json.parse", "ui.is_menu_open",
