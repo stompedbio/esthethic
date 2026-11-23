@@ -771,14 +771,17 @@ t_cfg:new_button("Load Custom Slot", function()
     end
 end)
 
--- SPREAD HELPER (not a true nospread: gates shots + adapts hitchance)
-local sp_sec     = ttab:new_section("Spread Helper", "Left")
-local sp_enable  = sp_sec:new_toggle("Enable Spread Helper", false)
-local sp_speed   = sp_sec:new_toggle("Hold Fire While Moving Fast", false)
-local sp_maxspd  = sp_sec:new_slider("Max Fire Speed", 0, 40, 20, 0, " studs/s")
-local sp_scope   = sp_sec:new_toggle("Require Scope (Snipers)", false)
-local sp_adapt   = sp_sec:new_toggle("Adaptive Hitchance", true)
-local sp_step    = sp_sec:new_slider("Hitchance Per Spread Miss", 1, 10, 4, 0, "%")
+-- SPREAD HELPER (state-based hitchance; this cannot remove weapon spread)
+local sp_sec      = ttab:new_section("Spread Helper", "Left")
+local sp_enable   = sp_sec:new_toggle("Enable Spread Helper", false)
+local sp_speed    = sp_sec:new_toggle("Hold Fire While Moving Fast", false)
+local sp_maxspd   = sp_sec:new_slider("Max Fire Speed", 0, 40, 20, 0, " studs/s")
+local sp_scope    = sp_sec:new_toggle("Require Scope (Snipers)", false)
+local sp_noscope  = sp_sec:new_slider("No-scope Chance", 0, 100, 65, 0, "%")
+local sp_crouch   = sp_sec:new_slider("Crouch Assist Chance", 0, 100, 80, 0, "%")
+local sp_moving   = sp_sec:new_slider("Moving Assist Chance", 0, 100, 75, 0, "%")
+local sp_adapt    = sp_sec:new_toggle("Adaptive Hitchance", true)
+local sp_step     = sp_sec:new_slider("Hitchance Per Spread Miss", 1, 10, 4, 0, "%")
 
 local spreadMisses = 0
 
@@ -795,27 +798,39 @@ end)
 onTick(function(tick)
     if not rb_enable:get() or not sp_enable:get() then return end
 
-    -- adaptive hitchance: each recent spread miss raises the requirement
-    if sp_adapt:get() then
-        local hc = math.min(rb_hc:get() + spreadMisses * sp_step:get(), 95)
-        rage.override_hitchance(hc)
+    local allow = true
+    local speed = movement.get_speed()
+    local wep = weapon.get_active()
+    local weaponType = wep and string.lower(tostring(wep.type or "")) or ""
+    local isSniper = string.find(weaponType, "sniper", 1, true) ~= nil
+    local scoped = not isSniper or weapon.is_scoped()
+
+    -- Start with the main Ragebot hitchance, then apply the active state values.
+    local hc = rb_hc:get()
+
+    if isSniper and not scoped then
+        hc = math.max(hc, sp_noscope:get())
+        if sp_scope:get() then allow = false end
     end
 
-    -- gate: only allow the ragebot to fire when conditions are accurate
-    local allow = true
+    if movement.is_ducking() then
+        hc = math.max(hc, sp_crouch:get())
+    end
 
-    if sp_speed:get() and movement.get_speed() > sp_maxspd:get() then
+    if speed > 1 then
+        hc = math.max(hc, sp_moving:get())
+    end
+
+    -- Keep the optional fast-movement fire gate.
+    if sp_speed:get() and speed > sp_maxspd:get() then
         allow = false
     end
 
-    if allow and sp_scope:get() then
-        local wep = weapon.get_active()
-        local t = wep and string.lower(tostring(wep.type or "")) or ""
-        if string.find(t, "sniper") and not weapon.is_scoped() then
-            allow = false
-        end
+    -- Recent spread misses raise the selected state hitchance further.
+    if sp_adapt:get() then
+        hc = math.min(hc + spreadMisses * sp_step:get(), 100)
     end
-
+    rage.override_hitchance(hc)
     rage.override_enabled(allow)
 end)
 
@@ -843,6 +858,8 @@ local CFG = {
     sp_enable, sp_speed, sp_maxspd, sp_scope, sp_adapt, sp_step,
     x_fake, x_ext_on, x_ext_amt, x_fpitch,
     m_hs_id, m_hs_vol, m_hs_pitch,
+    -- New state-based hitchance controls are appended to preserve older share-code indexes.
+    sp_noscope, sp_crouch, sp_moving,
 }
 
 -- base64 (pure Lua)
@@ -1065,7 +1082,7 @@ local FAQ = {
       a = "Run HVH Extras > Utilities > Run API Self-Test and read the result. Make sure Override Ragebot is on and Min Damage is not too high. The Spread Helper (off by default) can pause fire. Script errors pop up as notifications and go to the Lua console.",
       kw = { "not shooting", "ragebot", "wont shoot", "doesnt shoot", "no fire", "shoot", "rage", "working" } },
     { q = "What does the Spread Helper do?",
-      a = "It can't remove spread. It holds fire when you move too fast or are unscoped, and raises hitchance after spread misses, so fewer shots are wasted.",
+      a = "It cannot remove weapon spread. It selects a hitchance for unscoped snipers, crouching, and moving, and can raise hitchance after spread misses. Optional gates can pause firing.",
       kw = { "spread", "nospread", "helper", "inaccuracy" } },
     { q = "What is Defensive AA?",
       a = "HVH Extras > Advanced AA > Defensive AA. When double-tap is charged it shifts ticks and flicks pitch and yaw for 2 ticks to throw enemy resolvers off. It's off by default.",
