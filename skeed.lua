@@ -5,6 +5,33 @@
 
 local ICON = "rbxassetid://10734975692"
 
+-- THEMES
+local C = Color3.fromRGB
+local THEMES = {
+    Default = { accent = C(0,255,160),  accent2 = C(240,60,70),   good = C(120,255,120), bad = C(255,100,100), warn = C(255,200,60), text = C(255,255,255), sub = C(200,200,200), panel = C(20,22,30), header = C(70,130,240),  target = C(255,40,40) },
+    Ocean   = { accent = C(80,220,255), accent2 = C(60,140,255),  good = C(110,255,210), bad = C(255,110,130), warn = C(255,210,120), text = C(235,248,255), sub = C(160,190,210), panel = C(12,24,38), header = C(30,120,200),  target = C(80,220,255) },
+    Sunset  = { accent = C(255,150,70), accent2 = C(255,80,110),  good = C(255,220,120), bad = C(255,90,90),   warn = C(255,190,80), text = C(255,244,235), sub = C(210,180,170), panel = C(32,18,24), header = C(220,90,70),   target = C(255,110,70) },
+    Purple  = { accent = C(190,120,255),accent2 = C(255,110,220), good = C(160,255,200), bad = C(255,100,140), warn = C(255,210,120), text = C(245,238,255), sub = C(185,170,210), panel = C(24,18,36), header = C(120,70,220),  target = C(210,120,255) },
+    Rose    = { accent = C(255,120,170),accent2 = C(255,170,200), good = C(170,255,190), bad = C(255,90,110),  warn = C(255,205,130), text = C(255,240,245), sub = C(210,175,190), panel = C(34,18,26), header = C(220,70,130),  target = C(255,100,150) },
+    Mono    = { accent = C(235,235,235),accent2 = C(160,160,160), good = C(220,220,220), bad = C(150,150,150), warn = C(200,200,200), text = C(255,255,255), sub = C(150,150,150), panel = C(16,16,18), header = C(70,70,76),    target = C(235,235,235) },
+}
+-- Rainbow animates its accents; Custom is rebuilt from a colorpicker
+THEMES.Rainbow, THEMES.Custom = {}, {}
+for k, v in pairs(THEMES.Default) do THEMES.Rainbow[k] = v; THEMES.Custom[k] = v end
+
+local theme, themeHooks, currentTheme = {}, {}, "Default"
+local function runThemeHooks()
+    for _, fn in ipairs(themeHooks) do pcall(fn) end
+end
+local function applyTheme(name)
+    local src = THEMES[name]
+    if not src then return end
+    currentTheme = name
+    for k, v in pairs(src) do theme[k] = v end
+    runThemeHooks()
+end
+applyTheme("Default")
+
 -- Safety helpers: an error in any callback pops up as a notification
 -- and is written to the Lua console (once per unique error)
 local reportedErrors, toastCount = {}, 0
@@ -261,7 +288,7 @@ onEvent("paint", function()
     local target = rage.get_target()
 
     if v_target3d:get() and target and (target.aim_point or target.point) then
-        render3d.box(CFrame.new(target.aim_point or target.point), Vector3.new(1.2, 1.2, 1.2), Color3.fromRGB(255, 40, 40), 0.4, true)
+        render3d.box(CFrame.new(target.aim_point or target.point), Vector3.new(1.2, 1.2, 1.2), theme.target, 0.4, true)
     end
 
     if v_hud:get() then
@@ -276,22 +303,22 @@ onEvent("paint", function()
         if aa_enable:get() then
             local side = aa.get_inverter() and "RIGHT" or "LEFT"
             local choke = aa.is_fake_lag_choking() and "YES" or "NO"
-            line(string.format("AA: %d° [%s] | CHOKE: %s", aa_desync:get(), side, choke), color(240, 60, 70))
+            line(string.format("AA: %d° [%s] | CHOKE: %s", aa_desync:get(), side, choke), theme.accent2)
         end
 
         if res_enable:get() then
             if target and target.slot ~= nil then
                 local s = getState(target.slot)
-                line(string.format("RESOLVER: %d° | MISS: %d", BRUTE_ANGLES[s.stage] or 0, s.misses), color(0, 255, 160))
+                line(string.format("RESOLVER: %d° | MISS: %d", BRUTE_ANGLES[s.stage] or 0, s.misses), theme.accent)
             else
-                line("RESOLVER: ACTIVE", color(200, 200, 200))
+                line("RESOLVER: ACTIVE", theme.sub)
             end
         end
 
         if rage.is_double_tap_charged() then
-            line("DT: READY", color(120, 255, 120))
+            line("DT: READY", theme.good)
         else
-            line(string.format("DT: %d/14", rage.get_double_tap_charge()), color(255, 120, 120))
+            line(string.format("DT: %d/14", rage.get_double_tap_charge()), theme.bad)
         end
     end
 end)
@@ -583,17 +610,17 @@ onEvent("paint", function()
         if label == "" then label = "skeed.$win" end
         local txt = label .. string.format(" | %d fps | %d ms", fps, ping)
         local size = render.measure_text(txt, 14)
-        render.text(sw - size.X - 20, 12, txt, color(255, 255, 255), 14, true)
+        render.text(sw - size.X - 20, 12, txt, theme.accent, 14, true)
     end
 
     -- hit / miss stats, top left
     if xv_stats:get() then
         local total = stats.hits + stats.misses
         local pct = total > 0 and math.floor(stats.hits / total * 100) or 0
-        render.text(20, 40, string.format("Hits %d | Misses %d | %d%%", stats.hits, stats.misses, pct), color(0, 255, 160), 14, true)
+        render.text(20, 40, string.format("Hits %d | Misses %d | %d%%", stats.hits, stats.misses, pct), theme.accent, 14, true)
         render.text(20, 58, string.format("Miss: resolver %d, spread %d, occ %d, death %d",
             stats.reasons.resolver, stats.reasons.spread, stats.reasons.occlusion, stats.reasons.death),
-            color(200, 200, 200), 13, true)
+            theme.sub, 13, true)
     end
 
     -- predicted enemy paths
@@ -604,8 +631,8 @@ onEvent("paint", function()
                 local now = entity.get_player_position(enemy)
                 local future = movement.predict_position(enemy, ticks)
                 if now and future then
-                    render3d.line(now, future, Color3.fromRGB(0, 255, 120), 2)
-                    render3d.sphere(future, 0.5, Color3.fromRGB(0, 255, 120), 0.2)
+                    render3d.line(now, future, theme.good, 2)
+                    render3d.sphere(future, 0.5, theme.good, 0.2)
                 end
             end
         end
@@ -655,7 +682,7 @@ onEvent("paint", function()
         if target and target.player then
             local pos = entity.get_player_position(target.player)
             if pos then
-                render3d.ring(pos - Vector3.new(0, 2.8, 0), 3, 0.4, Color3.fromRGB(255, 60, 60), 0.2, true)
+                render3d.ring(pos - Vector3.new(0, 2.8, 0), 3, 0.4, theme.target, 0.2, true)
             end
         end
     end
@@ -663,7 +690,7 @@ onEvent("paint", function()
     -- manual direction indicator
     local manual = aa.get_manual()
     if manual then
-        render.text(sw / 2 - 40, sh / 2 + 60, "MANUAL: " .. manual, color(255, 200, 60), 14, true, true)
+        render.text(sw / 2 - 40, sh / 2 + 60, "MANUAL: " .. manual, theme.warn, 14, true, true)
     end
 end)
 
@@ -759,13 +786,13 @@ end
 onEvent("aim_hit", function(e)
     pushLog(string.format("Hit %s in %s for %s (%s hp left)",
         nameOf(e.target), tostring(e.hitbox), tostring(e.damage), tostring(e.health_remaining)),
-        color(120, 255, 120))
+        theme.good)
 end)
 
 onEvent("aim_miss", function(e)
     pushLog(string.format("Missed %s in %s due to %s",
         nameOf(e.target), tostring(e.hitbox), tostring(e.reason)),
-        color(255, 100, 100))
+        theme.bad)
 end)
 
 -- MORE: HUD drawing (third paint pass)
@@ -795,26 +822,26 @@ onEvent("paint", function()
         end
 
         if rage.is_double_tap_charged() then
-            ind("DT", color(120, 255, 120))
+            ind("DT", theme.good)
         else
-            ind(string.format("DT %d/14", rage.get_double_tap_charge()), color(255, 120, 120))
+            ind(string.format("DT %d/14", rage.get_double_tap_charge()), theme.bad)
         end
-        ind("DMG " .. tostring(rage.get_min_damage()), color(255, 255, 255))
+        ind("DMG " .. tostring(rage.get_min_damage()), theme.text)
         if h_speed:get() then
-            ind(string.format("%s %d", tostring(movement.get_state()), math.floor(movement.get_speed() or 0)), color(200, 200, 200))
+            ind(string.format("%s %d", tostring(movement.get_state()), math.floor(movement.get_speed() or 0)), theme.sub)
         end
         if h_spread:get() then
-            ind(string.format("SPREAD %.2f  INACC %.2f", weapon.get_spread() or 0, weapon.get_inaccuracy() or 0), color(255, 200, 120))
+            ind(string.format("SPREAD %.2f  INACC %.2f", weapon.get_spread() or 0, weapon.get_inaccuracy() or 0), theme.warn)
         end
-        if rage.is_force_baim() then ind("BAIM", color(255, 200, 60)) end
-        if rage.is_force_safe_point() then ind("SAFE", color(120, 200, 255)) end
-        if aa.get_manual() then ind("MAN " .. aa.get_manual():upper(), color(255, 200, 60)) end
+        if rage.is_force_baim() then ind("BAIM", theme.warn) end
+        if rage.is_force_safe_point() then ind("SAFE", theme.header) end
+        if aa.get_manual() then ind("MAN " .. aa.get_manual():upper(), theme.warn) end
     end
 
     -- keybind list, left-middle
     if h_keys:get() then
         local y = cy - 40
-        render.text(20, y, "Keybinds", color(255, 255, 255), 14, true)
+        render.text(20, y, "Keybinds", theme.text, 14, true)
         y += 18
         local binds = {
             { "Invert Side", aa_invert:get() },
@@ -826,7 +853,7 @@ onEvent("paint", function()
         }
         for _, b in ipairs(binds) do
             if b[2] then
-                render.text(20, y, b[1] .. " [on]", color(0, 255, 160), 13, true)
+                render.text(20, y, b[1] .. " [on]", theme.accent, 13, true)
                 y += 16
             end
         end
@@ -840,7 +867,7 @@ onEvent("paint", function()
                 tostring(wep.ammo), tostring(wep.reserve),
                 wep.is_reloading and "  [RELOADING]" or "")
             local size = render.measure_text(txt, 14)
-            render.text(sw - size.X - 20, sh - 40, txt, color(255, 255, 255), 14, true)
+            render.text(sw - size.X - 20, sh - 40, txt, theme.text, 14, true)
         end
     end
 end)
@@ -1403,6 +1430,9 @@ local FAQ = {
     { q = "Why was my message blocked?",
       a = "The profanity filter blocks swearing, even with symbols or spaced-out letters. Rephrase and try again. Incoming messages are censored the same way.",
       kw = { "blocked", "filter", "censor", "swear", "profanity", "stars" } },
+    { q = "How do I change the UI theme?",
+      a = "HVH More > Theme. Pick a preset, Rainbow, or Custom with your own accent color. Apply Theme To Visual Colors also recolors chams, hat, wire boxes and cursors. Your choice is saved.",
+      kw = { "theme", "color", "colour", "style", "rainbow", "accent", "skin" } },
 }
 
 local function findAnswer(query)
@@ -1496,6 +1526,17 @@ for i = 1, MAX_LOG do
 end
 
 local YELLOW = Color3.fromRGB(255, 210, 90)
+
+-- theme hook: panels and new chat lines follow the active theme
+themeHooks[#themeHooks + 1] = function()
+    WHITE, GRAY, GREEN, ACCENT, PANEL, YELLOW =
+        theme.text, theme.sub, theme.good, theme.header, theme.panel, theme.warn
+end
+pcall(function()
+    WHITE, GRAY, GREEN, ACCENT, PANEL, YELLOW =
+        theme.text, theme.sub, theme.good, theme.header, theme.panel, theme.warn
+end)
+
 local onlineNow, lastMotd = 0, ""
 
 local function urlSafe(s)
@@ -1928,6 +1969,67 @@ x_misc:new_button("Run API Self-Test", function()
 end)
 
 end -- do (chat + helper)
+
+-- THEME MENU
+do
+    local tsec     = ttab:new_section("Theme", "Left")
+    local names    = { "Default", "Ocean", "Sunset", "Purple", "Rose", "Mono", "Rainbow", "Custom" }
+
+    local saved
+    pcall(function() saved = database.read("skeed_theme") end)
+    local startName = (type(saved) == "table" and THEMES[saved.name]) and saved.name or "Default"
+
+    local t_sel    = tsec:new_combobox("UI Theme", names, startName)
+    local t_custom = tsec:new_colorpicker("Custom Accent", Color3.fromRGB(0, 255, 160))
+
+    local function buildCustom()
+        local a = t_custom:get()
+        local function mix(w) return Color3.new(a.R + (1 - a.R) * w, a.G + (1 - a.G) * w, a.B + (1 - a.B) * w) end
+        THEMES.Custom = {
+            accent = a, accent2 = mix(0.4), good = C(120,255,120), bad = C(255,100,100), warn = C(255,200,60),
+            text = C(255,255,255), sub = C(200,200,200),
+            panel = Color3.new(a.R * 0.15 + 0.04, a.G * 0.15 + 0.04, a.B * 0.15 + 0.05),
+            header = a, target = a,
+        }
+    end
+
+    local function choose(name)
+        if name == "Custom" then buildCustom() end
+        applyTheme(name)
+        pcall(function()
+            database.write("skeed_theme", { name = name })
+            database.flush()
+        end)
+    end
+
+    t_sel:set_callback(function() choose(t_sel:get()) end)
+    t_custom:set_callback(function()
+        if currentTheme == "Custom" then choose("Custom") end
+    end)
+
+    -- push the theme into the other color pickers (chams, hat, cursor, wire boxes)
+    tsec:new_button("Apply Theme To Visual Colors", function()
+        pcall(function() v_vis_col:set(theme.accent) end)
+        pcall(function() v_hid_col:set(theme.accent2) end)
+        pcall(function() xv_wire_col:set(theme.accent) end)
+        pcall(function() xv_hat_col:set(theme.accent) end)
+        pcall(function() cu_col:set(theme.accent) end)
+        pcall(function() sc_col:set(theme.accent2) end)
+        notify("Theme", "Applied " .. currentTheme .. " to visual colors", 2, false)
+    end)
+
+    -- Rainbow animation
+    onEvent("paint", function()
+        if currentTheme ~= "Rainbow" then return end
+        local h = (globals.realtime() * 0.15) % 1
+        theme.accent  = Color3.fromHSV(h, 0.75, 1)
+        theme.accent2 = Color3.fromHSV((h + 0.5) % 1, 0.75, 1)
+        theme.header, theme.target = theme.accent, theme.accent2
+        runThemeHooks()
+    end)
+
+    choose(startName)
+end
 
 -- CLEANUP
 onEvent("shutdown", function()
