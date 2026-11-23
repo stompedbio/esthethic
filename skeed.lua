@@ -55,10 +55,21 @@ local function onEvent(name, fn)
     return client.set_event_callback(name, guard(name, fn))
 end
 
-local function slotOf(p)
-    local ok, s = pcall(entity.get_player_slot, p)
-    if ok and s ~= nil then return s end
-    return p
+-- per-enemy key: UserId for players, and slot numbers are mapped to a UserId
+-- once the ragebot has shown us which slot belongs to which player
+local slotMap = {}
+local function keyOf(x)
+    if type(x) == "number" then return slotMap[x] or x end
+    local ok, id = pcall(function() return x.UserId end)
+    if ok and id then return id end
+    return x
+end
+
+local function learnSlot()
+    local ok, t = pcall(rage.get_target)
+    if not ok or type(t) ~= "table" or t.slot == nil or t.player == nil then return end
+    local ok2, id = pcall(function() return t.player.UserId end)
+    if ok2 and id then slotMap[t.slot] = id end
 end
 
 -- MENU
@@ -150,11 +161,12 @@ end)
 local BRUTE_ANGLES = { 58, -58, 0, 86, -86 }
 local targetState = {}
 
-local function getState(slot)
-    if not targetState[slot] then
-        targetState[slot] = { misses = 0, stage = 1 }
+local function getState(who)
+    local key = keyOf(who)
+    if not targetState[key] then
+        targetState[key] = { misses = 0, stage = 1 }
     end
-    return targetState[slot]
+    return targetState[key]
 end
 
 local function applyResolverSettings()
@@ -186,6 +198,8 @@ onEvent("aim_miss", function(e)
 end)
 
 onTick(function(tick)
+    learnSlot()
+
     -- Lua brute-force only runs in Brute-force mode
     if not res_enable:get() or res_mode:get() ~= "Brute-force" then
         return
@@ -193,7 +207,7 @@ onTick(function(tick)
 
     for _, enemy in ipairs(entity.get_enemies()) do
         if entity.is_alive(enemy) then
-            local s = getState(slotOf(enemy))
+            local s = getState(enemy)
             plist.set(enemy, "Force body yaw", true)
             plist.set(enemy, "Override yaw offset", BRUTE_ANGLES[s.stage] or 0)
 
@@ -1136,7 +1150,7 @@ local c_view_sec = ctab:new_section("Display Options", "Right")
 
 local defaultNick = "player"
 do
-    local ok, nm = pcall(client.get_local_player_name)
+    local ok, nm = pcall(function() return game:GetService("Players").LocalPlayer.Name end)
     if ok and nm then
         local cleaned = string.gsub(tostring(nm), "[^%w_%.%- ]", "")
         if #cleaned >= 2 then defaultNick = string.sub(cleaned, 1, 24) end
@@ -1558,7 +1572,7 @@ x_misc:new_button("Run API Self-Test", function()
         "rage.get_min_damage", "rage.is_force_baim", "rage.is_force_safe_point",
         "rage.is_double_tap_charged", "rage.get_double_tap_charge", "rage.shift_ticks", "rage.reset",
         "plist.set", "plist.reset_all",
-        "entity.get_enemies", "entity.is_alive", "entity.get_player_slot", "entity.get_anim_state",
+        "entity.get_enemies", "entity.is_alive", "entity.get_local_player", "entity.get_anim_state",
         "entity.get_info", "entity.get_player_position",
         "movement.get_state", "movement.get_speed", "movement.predict_position",
         "weapon.get_active", "weapon.is_scoped",
@@ -1568,7 +1582,7 @@ x_misc:new_button("Run API Self-Test", function()
         "render.text", "render.rect_filled", "render.measure_text", "render.screen_size", "render.clear",
         "render3d.box", "render3d.line", "render3d.sphere",
         "http.json_encode", "http.json_decode", "chat.on_message", "client.latency",
-        "client.get_local_player_name", "globals.realtime", "globals.tickcount",
+        "client.get_camera_angles_deg", "globals.realtime", "globals.tickcount",
         "input.is_typing", "json.stringify", "json.parse", "ui.is_menu_open",
     }
 
