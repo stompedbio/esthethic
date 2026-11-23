@@ -388,6 +388,47 @@ local xv_hat_r     = x_vis:new_slider("China Hat Radius", 0.5, 4, 1.6, 1, " stud
 local xv_hat_h     = x_vis:new_slider("China Hat Height", 0.3, 3, 0.9, 1, " studs")
 local xv_hat_spin  = x_vis:new_slider("China Hat Spin Speed", 0, 5, 1, 1, "")
 local xv_hat_flip  = x_vis:new_toggle("Flip China Hat (if upside down)", false)
+local xv_hat_off   = x_vis:new_slider("China Hat Height Offset", -10, 10, 0, 1, " studs")
+
+-- where the hat sits: head center and half the head height, plus where it came from
+local function hatAnchor()
+    local center, half, source = nil, 1, nil
+
+    pcall(function()
+        local char = game:GetService("Players").LocalPlayer.Character
+        if not char then return end
+        local head = char:FindFirstChild("Head")
+        if head then
+            center, half, source = head.Position, head.Size.Y / 2, "character head"
+        else
+            local cf, size = char:GetBoundingBox()
+            center, half, source = cf.Position + Vector3.new(0, size.Y / 2 - 1, 0), 1, "character bounds"
+        end
+    end)
+
+    if not center then
+        local me = entity.get_local_player()
+        local pos = me and entity.get_player_position(me)
+        if pos then center, half, source = pos + Vector3.new(0, 1.5, 0), 1, "entity position" end
+    end
+    return center, half, source
+end
+
+x_vis:new_button("Print China Hat Info", function()
+    local function fmt(v)
+        if not v then return "none" end
+        return string.format("%.1f, %.1f, %.1f", v.X, v.Y, v.Z)
+    end
+    local center, half, source = hatAnchor()
+    local root, cam, ent = nil, nil, nil
+    pcall(function() root = game:GetService("Players").LocalPlayer.Character.HumanoidRootPart.Position end)
+    pcall(function() cam = workspace.CurrentCamera.CFrame.Position end)
+    pcall(function() ent = entity.get_player_position(entity.get_local_player()) end)
+    local msg = string.format("hat anchor (%s): %s | root: %s | entity pos: %s | camera: %s",
+        tostring(source), fmt(center), fmt(root), fmt(ent), fmt(cam))
+    client.log("[china hat] " .. msg)
+    notify("China Hat info", msg, 12, false)
+end)
 
 -- Utilities
 local u_log = x_misc:new_toggle("Log Shots To Console", true)
@@ -585,33 +626,13 @@ onEvent("paint", function()
 
     -- china hat: a spinning cone above your own head
     if xv_hat:get() then
-        local center, half = nil, 1
-
-        -- head center and half its height, read from your own character
-        pcall(function()
-            local char = game:GetService("Players").LocalPlayer.Character
-            if not char then return end
-            local head = char:FindFirstChild("Head")
-            if head then
-                center, half = head.Position, head.Size.Y / 2
-            else
-                local cf, size = char:GetBoundingBox()
-                center, half = cf.Position + Vector3.new(0, size.Y / 2 - 1, 0), 1
-            end
-        end)
-
-        -- last resort: your position plus roughly one body height
-        if not center then
-            local me = entity.get_local_player()
-            local pos = me and entity.get_player_position(me)
-            if pos then center, half = pos + Vector3.new(0, 1.5, 0), 1 end
-        end
+        local center, half = hatAnchor()
 
         if center then
             local radius, height = xv_hat_r:get(), xv_hat_h:get()
             local col = xv_hat_col:get()
             local dir = xv_hat_flip:get() and -1 or 1
-            local base = center + Vector3.new(0, dir * (half + 0.15), 0)
+            local base = center + Vector3.new(0, dir * (half + 0.15) + xv_hat_off:get(), 0)
             local apex = base + Vector3.new(0, dir * height, 0)
             local spokes = 18
             local step = (2 * math.pi) / spokes
@@ -1103,7 +1124,7 @@ end
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 8
+local CODE_VERSION = 9
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -1126,7 +1147,7 @@ local CFG = {
     -- new controls are appended at the end
     sp_noscope, sp_crouch, sp_moving,
     xv_wire, xv_wire_col, xv_ring, xv_wm_text, h_speed, h_spread,
-    xv_hat, xv_hat_col, xv_hat_r, xv_hat_h, xv_hat_spin, xv_hat_flip,
+    xv_hat, xv_hat_col, xv_hat_r, xv_hat_h, xv_hat_spin, xv_hat_flip, xv_hat_off,
     cu_enable, cu_style, cu_size, cu_speed, cu_col, cu_hide, cu_offx, cu_offy,
     sc_enable, sc_gap, sc_thick, sc_dot, sc_col, sc_hide,
     st_stand_real, st_stand_fake, st_run_real, st_run_fake,
