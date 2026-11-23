@@ -382,6 +382,11 @@ local xv_wire      = x_vis:new_toggle("Enemy Wire Boxes", false)
 local xv_wire_col  = x_vis:new_colorpicker("Wire Box Color", Color3.fromRGB(255, 80, 80))
 local xv_ring      = x_vis:new_toggle("Target Ring", false)
 local xv_wm_text   = x_vis:new_textbox("Watermark Text", "skeed.$win", "skeed.$win")
+local xv_hat       = x_vis:new_toggle("China Hat", false)
+local xv_hat_col   = x_vis:new_colorpicker("China Hat Color", Color3.fromRGB(190, 120, 255))
+local xv_hat_r     = x_vis:new_slider("China Hat Radius", 0.5, 4, 1.6, 1, " studs")
+local xv_hat_h     = x_vis:new_slider("China Hat Height", 0.3, 3, 0.9, 1, " studs")
+local xv_hat_spin  = x_vis:new_slider("China Hat Spin Speed", 0, 5, 1, 1, "")
 
 -- Utilities
 local u_log = x_misc:new_toggle("Log Shots To Console", true)
@@ -572,6 +577,38 @@ onEvent("paint", function()
                 local pos = entity.get_player_position(enemy)
                 if pos then
                     render3d.wire_box(CFrame.new(pos), Vector3.new(3, 5.5, 3), col, 0.2, true)
+                end
+            end
+        end
+    end
+
+    -- china hat: a spinning cone above your own head
+    if xv_hat:get() then
+        local me = entity.get_local_player()
+        if me then
+            local head = nil
+            pcall(function() head = me.Character.Head.Position end)
+            if not head then
+                local pos = entity.get_player_position(me)
+                if pos then head = pos + Vector3.new(0, 1.5, 0) end
+            end
+
+            if head then
+                local radius, height = xv_hat_r:get(), xv_hat_h:get()
+                local col = xv_hat_col:get()
+                local base = head + Vector3.new(0, 0.6, 0)
+                local apex = base + Vector3.new(0, height, 0)
+                local spokes = 18
+                local step = (2 * math.pi) / spokes
+                local spin = globals.realtime() * xv_hat_spin:get()
+
+                for k = 0, spokes - 1 do
+                    local a1 = spin + k * step
+                    local a2 = a1 + step
+                    local p1 = base + Vector3.new(math.cos(a1) * radius, 0, math.sin(a1) * radius)
+                    local p2 = base + Vector3.new(math.cos(a2) * radius, 0, math.sin(a2) * radius)
+                    render3d.line(apex, p1, col, 1, 0.1)
+                    render3d.line(p1, p2, col, 1, 0.1)
                 end
             end
         end
@@ -1052,7 +1089,7 @@ end
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 6
+local CODE_VERSION = 7
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -1075,6 +1112,7 @@ local CFG = {
     -- new controls are appended at the end
     sp_noscope, sp_crouch, sp_moving,
     xv_wire, xv_wire_col, xv_ring, xv_wm_text, h_speed, h_spread,
+    xv_hat, xv_hat_col, xv_hat_r, xv_hat_h, xv_hat_spin,
     cu_enable, cu_style, cu_size, cu_speed, cu_col, cu_hide, cu_offx, cu_offy,
     sc_enable, sc_gap, sc_thick, sc_dot, sc_col, sc_hide,
     st_stand_real, st_stand_fake, st_run_real, st_run_fake,
@@ -1322,8 +1360,8 @@ local FAQ = {
       a = "HVH More > Cursor. Custom Cursor draws a spinning crosshair, diamond, triangle or star at your mouse and hides the normal one. Sniper Cursor draws its own scope reticle while a sniper is scoped in, in place of the game's. Size, speed, gap and colors are adjustable.",
       kw = { "cursor", "mouse", "pointer", "sniper", "scope", "reticle", "rotate", "spin" } },
     { q = "What extra visuals are there?",
-      a = "HVH Extras > Extra Visuals has Enemy Wire Boxes, Target Ring, path prediction and an editable Watermark Text. HVH More > HUD can show speed and state, plus spread and inaccuracy, under your crosshair.",
-      kw = { "visual", "wire", "box", "ring", "watermark", "esp", "hud", "indicator", "speed" } },
+      a = "HVH Extras > Extra Visuals has Enemy Wire Boxes, Target Ring, China Hat (a spinning cone above your head, on/off toggle), path prediction and an editable Watermark Text. HVH More > HUD can show speed and state, plus spread and inaccuracy, under your crosshair.",
+      kw = { "visual", "wire", "box", "ring", "watermark", "esp", "hud", "indicator", "speed", "hat", "china", "chinese" } },
     { q = "How do cloud configs work?",
       a = "Chat tab > Cloud Configs. Press Upload My Config to get a short ID and send that ID to a friend. They paste it in Config ID and press Download Config. It needs the Server URL set. Keybinds are not included.",
       kw = { "cloud", "config id", "upload", "download", "online config", "id" } },
@@ -1822,7 +1860,7 @@ x_misc:new_button("Run API Self-Test", function()
         "chams.get_materials", "sounds.override_hitsound", "sounds.override_killsound",
         "sounds.get_hitsound_names", "clantag.set", "clantag.reset",
         "render.text", "render.rect_filled", "render.measure_text", "render.screen_size", "render.clear",
-        "render3d.box", "render3d.line", "render3d.sphere", "render3d.wire_box", "render3d.ring", "render.line", "render.circle_filled", "input.get_pointer_position",
+        "render3d.box", "render3d.line", "render3d.sphere", "render3d.wire_box", "render3d.ring", "entity.get_local_player", "render.line", "render.circle_filled", "input.get_pointer_position",
         "weapon.get_spread", "weapon.get_inaccuracy", "sounds.play_hitsound", "sounds.play_killsound",
         "http.json_encode", "http.json_decode", "chat.on_message", "client.latency",
         "client.get_camera_angles_deg", "globals.realtime", "globals.tickcount",
