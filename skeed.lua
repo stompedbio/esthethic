@@ -567,10 +567,10 @@ onTick(function(tick)
 end)
 
 -- EXTRAS: stats + shot logging
-local stats = { fired = 0, hits = 0, misses = 0, reasons = { resolver = 0, spread = 0, occlusion = 0, death = 0 } }
+local stats = { fired = 0, hits = 0, misses = 0, kills = 0, reasons = { resolver = 0, spread = 0, occlusion = 0, death = 0 } }
 
 _G.__hvh_reset_stats = function()
-    stats.fired, stats.hits, stats.misses = 0, 0, 0
+    stats.fired, stats.hits, stats.misses, stats.kills = 0, 0, 0, 0
     for k in pairs(stats.reasons) do stats.reasons[k] = 0 end
 end
 
@@ -583,6 +583,7 @@ end)
 
 onEvent("aim_hit", function(e)
     stats.hits += 1
+    if e.health_remaining and e.health_remaining <= 0 then stats.kills += 1 end
     if u_log:get() then
         client.log(string.format("[hit] hitbox=%s dmg=%s hp_left=%s bt=%s", tostring(e.hitbox), tostring(e.damage), tostring(e.health_remaining), tostring(e.backtrack_ticks)))
     end
@@ -617,7 +618,7 @@ onEvent("paint", function()
     if xv_stats:get() then
         local total = stats.hits + stats.misses
         local pct = total > 0 and math.floor(stats.hits / total * 100) or 0
-        render.text(20, 40, string.format("Hits %d | Misses %d | %d%%", stats.hits, stats.misses, pct), theme.accent, 14, true)
+        render.text(20, 40, string.format("Hits %d | Misses %d | %d%% | Kills %d", stats.hits, stats.misses, pct, stats.kills), theme.accent, 14, true)
         render.text(20, 58, string.format("Miss: resolver %d, spread %d, occ %d, death %d",
             stats.reasons.resolver, stats.reasons.spread, stats.reasons.occlusion, stats.reasons.death),
             theme.sub, 13, true)
@@ -710,6 +711,9 @@ local fl_air    = t_aa:new_slider("In-Air Lag", 0, 14, 14, 0, "t")
 -- Smart Resolver
 local sr_anim   = t_res:new_toggle("Animstate Assist (Adaptive mode)", true)
 local sr_air_sp = t_res:new_toggle("Safe Point On Airborne Enemies", true)
+local yp_enable = t_res:new_toggle("Yaw Prediction (Adaptive mode)", true)
+local yp_time   = t_res:new_slider("Prediction Time", 0, 300, 90, 0, "ms")
+local yp_jitter = t_res:new_toggle("Predict Jitter Flips", true)
 
 -- HUD
 local h_cross   = t_hud:new_toggle("Crosshair Indicators", true)
@@ -737,17 +741,73 @@ onTick(function(tick)
 end)
 
 -- MORE: smart resolver
+-- Yaw prediction: keeps a short history of each enemy's yaw / desync.
+--  * spinning enemies: yaw velocity is smoothed and extrapolated forward
+--  * jitter enemies: if the desync side flipped on the last samples we
+--    expect it to flip again and aim at the side it is about to be on
+local yawHist = {}
+local function wrapDeg(d)
+    d = (d + 180) % 360 - 180
+    return d
+end
+
+local function predictOffset(enemy, anim, base)
+    local now = globals.realtime()
+    local key = keyOf(enemy)
+    local h = yawHist[key]
+    if not h then
+        h = { yaw = anim.eye_angles_y or 0, t = now, vel = 0, side = 0, flips = 0, lastBase = base }
+        yawHist[key] = h
+        return base
+    end
+    local dt = now - h.t
+    if dt < 0.008 then return h.out or base end
+
+    local yaw = anim.eye_angles_y or h.yaw
+    local rawVel = wrapDeg(yaw - h.yaw) / dt
+    rawVel = math.max(-2000, math.min(2000, rawVel))
+    h.vel = h.vel * 0.7 + rawVel * 0.3            -- smoothed deg/s
+    h.yaw, h.t = yaw, now
+
+    -- desync side tracking (for jitter)
+    local side = base > 2 and 1 or (base < -2 and -1 or 0)
+    if side ~= 0 and h.side ~= 0 then
+        if side ~= h.side then h.flips = math.min(h.flips + 1, 6)
+        else h.flips = math.max(h.flips - 1, 0) end
+    end
+    if side ~= 0 then h.side = side end
+
+    local out = base
+    local lead = yp_time:get() / 1000
+    -- spin: add the yaw the enemy will have turned by the time we shoot
+    if math.abs(h.vel) > 40 then
+        out = out + math.max(-60, math.min(60, h.vel * lead))
+    end
+    -- jitter: flips keep happening -> assume the opposite side next tick
+    if yp_jitter:get() and h.flips >= 3 and side ~= 0 then
+        out = -base
+    end
+    out = math.max(-86, math.min(86, out))
+    h.out = out
+    return out
+end
+
 onTick(function(tick)
     if not res_enable:get() then return end
     local useAnim = sr_anim:get() and res_mode:get() == "Adaptive"
+    local usePred = yp_enable:get() and res_mode:get() == "Adaptive"
 
     for _, enemy in ipairs(entity.get_enemies()) do
         if entity.is_alive(enemy) then
             -- use the enemy's evaluated animstate desync as the yaw offset
-            if useAnim then
+            if useAnim or usePred then
                 local anim = entity.get_anim_state(enemy)
                 if anim and anim.desync then
                     local off = math.max(-86, math.min(86, anim.desync))
+                    if usePred then
+                        local ok, r = pcall(predictOffset, enemy, anim, off)
+                        if ok and r then off = r end
+                    end
                     plist.set(enemy, "Force body yaw", true)
                     plist.set(enemy, "Override yaw offset", off)
                 end
@@ -1147,11 +1207,145 @@ do
     end)
 end
 
+-- ESP TAB: enemy ESP, hitmarker, crosshair, fov circle, ammo warning
+local etab      = menu.new_tab("HVH ESP", ICON)
+local e_esp     = etab:new_section("Enemy ESP", "Left")
+local e_aim     = etab:new_section("Aim Helpers", "Right")
+
+local esp_enable = e_esp:new_toggle("Enemy ESP", false)
+local esp_name   = e_esp:new_toggle("Names", true)
+local esp_dist   = e_esp:new_toggle("Distance", true)
+local esp_health = e_esp:new_toggle("Health Bar", true)
+local esp_weapon = e_esp:new_toggle("Weapon", true)
+local esp_res    = e_esp:new_toggle("Resolver Info", false)
+local esp_snap   = e_esp:new_toggle("Snaplines", false)
+local esp_col    = e_esp:new_colorpicker("ESP Color", Color3.fromRGB(255, 255, 255))
+
+local hm_enable  = e_aim:new_toggle("Hitmarker", false)
+local hm_col     = e_aim:new_colorpicker("Hitmarker Color", Color3.fromRGB(255, 255, 255))
+local cx_enable  = e_aim:new_toggle("Custom Crosshair", false)
+local cx_size    = e_aim:new_slider("Crosshair Length", 2, 30, 8, 0, " px")
+local cx_gap     = e_aim:new_slider("Crosshair Gap", 0, 20, 4, 0, " px")
+local cx_thick   = e_aim:new_slider("Crosshair Thickness", 1, 4, 1, 0, " px")
+local cx_dot     = e_aim:new_toggle("Crosshair Center Dot", true)
+local cx_col     = e_aim:new_colorpicker("Crosshair Color", Color3.fromRGB(0, 255, 160))
+local fov_enable = e_aim:new_toggle("FOV Circle", false)
+local fov_r      = e_aim:new_slider("FOV Circle Radius", 20, 600, 200, 0, " px")
+local fov_col    = e_aim:new_colorpicker("FOV Circle Color", Color3.fromRGB(255, 255, 255))
+local am_enable  = e_aim:new_toggle("Low Ammo Warning", false)
+local am_pct     = e_aim:new_slider("Warn Below", 5, 60, 25, 0, "%")
+
+local lastHit = -10
+
+onEvent("aim_hit", function(e)
+    lastHit = globals.realtime()
+end)
+
+do
+    local function enemyName(enemy)
+        local name = nameOf(enemy)
+        if name == "player" then
+            local ok, n = pcall(function() return enemy.Name end)
+            if ok and n then name = tostring(n) end
+        end
+        return name
+    end
+
+    local function drawEsp(sw, sh)
+        local me = entity.get_local_player()
+        local myPos = me and entity.get_player_position(me)
+        local col = esp_col:get()
+
+        for _, enemy in ipairs(entity.get_enemies()) do
+            if entity.is_alive(enemy) then
+                local pos = entity.get_player_position(enemy)
+                if pos then
+                    local head = entity.get_player_hitbox_position(enemy, "head") or (pos + Vector3.new(0, 2, 0))
+                    local x, y, onScreen = render.world_to_screen(head + Vector3.new(0, 1.2, 0))
+
+                    if onScreen then
+                        if esp_snap:get() then
+                            render.line(sw / 2, sh, x, y, col, 1)
+                        end
+
+                        local ty = y - 34
+
+                        if esp_name:get() or esp_dist:get() then
+                            local label = esp_name:get() and enemyName(enemy) or ""
+                            if esp_dist:get() and myPos then
+                                label = label .. " [" .. math.floor((pos - myPos).Magnitude) .. "]"
+                            end
+                            render.text(x, ty, label, col, 13, true, true)
+                            ty += 14
+                        end
+
+                        if esp_health:get() then
+                            local hp = math.max(0, math.min(100, entity.get_player_health(enemy) or 0)) / 100
+                            render.rect_filled(x - 25, ty, 50, 5, Color3.fromRGB(20, 20, 20))
+                            render.rect_filled(x - 24, ty + 1, 48 * hp, 3, Color3.fromRGB(255 * (1 - hp), 255 * hp, 60))
+                            ty += 8
+                        end
+
+                        if esp_weapon:get() then
+                            render.text(x, ty, tostring(entity.get_player_weapon_name(enemy) or ""), Color3.fromRGB(200, 200, 200), 12, true, true)
+                            ty += 13
+                        end
+
+                        if esp_res:get() then
+                            local s = getState(enemy)
+                            render.text(x, ty, string.format("R %d  miss %d", BRUTE_ANGLES[s.stage] or 0, s.misses), Color3.fromRGB(0, 255, 160), 12, true, true)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- registered after the main paint callback, so render.clear() there does not wipe it
+    onEvent("paint", function()
+        local sw, sh = render.screen_size()
+        local cx, cy = sw / 2, sh / 2
+
+        if esp_enable:get() then drawEsp(sw, sh) end
+
+        if fov_enable:get() then
+            render.circle(cx, cy, fov_r:get(), fov_col:get(), 1)
+        end
+
+        if cx_enable:get() then
+            local gap, len, th, col = cx_gap:get(), cx_size:get(), cx_thick:get(), cx_col:get()
+            render.line(cx - gap - len, cy, cx - gap, cy, col, th)
+            render.line(cx + gap, cy, cx + gap + len, cy, col, th)
+            render.line(cx, cy - gap - len, cx, cy - gap, col, th)
+            render.line(cx, cy + gap, cx, cy + gap + len, col, th)
+            if cx_dot:get() then render.circle_filled(cx, cy, 1.5, col) end
+        end
+
+        if hm_enable:get() and globals.realtime() - lastHit < 0.35 then
+            local col = hm_col:get()
+            local a, b = 4, 10
+            render.line(cx - b, cy - b, cx - a, cy - a, col, 2)
+            render.line(cx + b, cy - b, cx + a, cy - a, col, 2)
+            render.line(cx - b, cy + b, cx - a, cy + a, col, 2)
+            render.line(cx + b, cy + b, cx + a, cy + a, col, 2)
+        end
+
+        if am_enable:get() then
+            local ammo, maxAmmo = weapon.get_ammo(), weapon.get_max_ammo()
+            if weapon.is_reloading() then
+                render.text(cx, sh * 0.62, "RELOADING", Color3.fromRGB(255, 210, 90), 16, true, true)
+            elseif ammo and maxAmmo and maxAmmo > 0 and ammo / maxAmmo <= am_pct:get() / 100 then
+                render.text(cx, sh * 0.62, string.format("LOW AMMO  %d/%d", ammo, maxAmmo), Color3.fromRGB(255, 80, 80), 16, true, true)
+            end
+        end
+    end)
+end
+
 -- CONFIG SHARING: "Show Code" / "Load Code" (codes start with SKEED)
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 9
+local CODE_VERSION = 11
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -1166,7 +1360,7 @@ local CFG = {
     wp_enable, wp_sniper, wp_pistol, wp_other,
     xv_watermark, xv_stats, xv_predict, xv_pred_tick, u_log,
     fl_state, fl_stand, fl_run, fl_air,
-    sr_anim, sr_air_sp,
+    sr_anim, sr_air_sp, yp_enable, yp_time, yp_jitter,
     h_cross, h_keys, h_hitlog, h_weapon,
     sp_enable, sp_speed, sp_maxspd, sp_scope, sp_adapt, sp_step,
     x_fake, x_ext_on, x_ext_amt, x_fpitch,
@@ -1175,6 +1369,9 @@ local CFG = {
     sp_noscope, sp_crouch, sp_moving,
     xv_wire, xv_wire_col, xv_ring, xv_wm_text, h_speed, h_spread,
     xv_hat, xv_hat_col, xv_hat_r, xv_hat_h, xv_hat_spin, xv_hat_flip, xv_hat_off,
+    esp_enable, esp_name, esp_dist, esp_health, esp_weapon, esp_res, esp_snap, esp_col,
+    hm_enable, hm_col, cx_enable, cx_size, cx_gap, cx_thick, cx_dot, cx_col,
+    fov_enable, fov_r, fov_col, am_enable, am_pct,
     cu_enable, cu_style, cu_size, cu_speed, cu_col, cu_hide, cu_offx, cu_offy,
     sc_enable, sc_gap, sc_thick, sc_dot, sc_col, sc_hide,
     st_stand_real, st_stand_fake, st_run_real, st_run_fake,
@@ -1421,6 +1618,9 @@ local FAQ = {
     { q = "How do the cursors work?",
       a = "HVH More > Cursor. Custom Cursor draws a spinning crosshair, diamond, triangle or star at your mouse and hides the normal one. Sniper Cursor draws its own scope reticle while a sniper is scoped in, in place of the game's. Size, speed, gap and colors are adjustable.",
       kw = { "cursor", "mouse", "pointer", "sniper", "scope", "reticle", "rotate", "spin" } },
+    { q = "What is in the HVH ESP tab?",
+      a = "Enemy ESP shows names, distance, a health bar, their weapon, resolver info and snaplines (turn on Enemy ESP first). Aim Helpers has a hitmarker, a custom crosshair, an FOV circle and a low ammo warning. Everything is off by default.",
+      kw = { "esp", "name", "health", "snapline", "hitmarker", "crosshair", "fov", "ammo", "warning" } },
     { q = "What extra visuals are there?",
       a = "HVH Extras > Extra Visuals has Enemy Wire Boxes, Target Ring, China Hat (a spinning cone above your head, on/off toggle), path prediction and an editable Watermark Text. HVH More > HUD can show speed and state, plus spread and inaccuracy, under your crosshair.",
       kw = { "visual", "wire", "box", "ring", "watermark", "esp", "hud", "indicator", "speed", "hat", "china", "chinese" } },
@@ -1936,7 +2136,9 @@ x_misc:new_button("Run API Self-Test", function()
         "chams.get_materials", "sounds.override_hitsound", "sounds.override_killsound",
         "sounds.get_hitsound_names", "clantag.set", "clantag.reset",
         "render.text", "render.rect_filled", "render.measure_text", "render.screen_size", "render.clear",
-        "render3d.box", "render3d.line", "render3d.sphere", "render3d.wire_box", "render3d.ring", "entity.get_local_player", "render.line", "render.circle_filled", "input.get_pointer_position",
+        "render3d.box", "render3d.line", "render3d.sphere", "render3d.wire_box", "render3d.ring", "render.world_to_screen", "render.circle",
+        "entity.get_player_health", "entity.get_player_weapon_name", "entity.get_player_hitbox_position",
+        "weapon.get_ammo", "weapon.get_max_ammo", "weapon.is_reloading", "entity.get_local_player", "render.line", "render.circle_filled", "input.get_pointer_position",
         "weapon.get_spread", "weapon.get_inaccuracy", "sounds.play_hitsound", "sounds.play_killsound",
         "http.json_encode", "http.json_decode", "chat.on_message", "client.latency",
         "client.get_camera_angles_deg", "globals.realtime", "globals.tickcount",
@@ -1993,39 +2195,53 @@ do
         }
     end
 
-    local function choose(name)
+    local t_auto = tsec:new_toggle("Apply Theme To Visual Colors Automatically", true)
+
+    local function pushVisuals()
+        pcall(function() v_vis_col:set(theme.accent, true) end)
+        pcall(function() v_hid_col:set(theme.accent2, true) end)
+        pcall(function() xv_wire_col:set(theme.accent, true) end)
+        pcall(function() xv_hat_col:set(theme.accent, true) end)
+        pcall(function() cu_col:set(theme.accent, true) end)
+        pcall(function() sc_col:set(theme.accent2, true) end)
+    end
+
+    local function choose(name, fromUser)
         if name == "Custom" then buildCustom() end
         applyTheme(name)
+        -- only on a real change by the user; loading must not overwrite saved colors
+        if fromUser and t_auto:get() and name ~= "Rainbow" then pushVisuals() end
         pcall(function()
             database.write("skeed_theme", { name = name })
             database.flush()
         end)
     end
 
-    t_sel:set_callback(function() choose(t_sel:get()) end)
+    t_sel:set_callback(function() choose(t_sel:get(), true) end)
     t_custom:set_callback(function()
-        if currentTheme == "Custom" then choose("Custom") end
+        if currentTheme == "Custom" then choose("Custom", true) end
     end)
 
     -- push the theme into the other color pickers (chams, hat, cursor, wire boxes)
     tsec:new_button("Apply Theme To Visual Colors", function()
-        pcall(function() v_vis_col:set(theme.accent) end)
-        pcall(function() v_hid_col:set(theme.accent2) end)
-        pcall(function() xv_wire_col:set(theme.accent) end)
-        pcall(function() xv_hat_col:set(theme.accent) end)
-        pcall(function() cu_col:set(theme.accent) end)
-        pcall(function() sc_col:set(theme.accent2) end)
+        pushVisuals()
         notify("Theme", "Applied " .. currentTheme .. " to visual colors", 2, false)
     end)
 
     -- Rainbow animation
+    local rainbowPush = 0
     onEvent("paint", function()
         if currentTheme ~= "Rainbow" then return end
         local h = (globals.realtime() * 0.15) % 1
         theme.accent  = Color3.fromHSV(h, 0.75, 1)
         theme.accent2 = Color3.fromHSV((h + 0.5) % 1, 0.75, 1)
         theme.header, theme.target = theme.accent, theme.accent2
+        theme.panel = Color3.fromHSV(h, 0.5, 0.18)
         runThemeHooks()
+        if t_auto:get() and globals.realtime() - (rainbowPush or 0) > 0.1 then
+            rainbowPush = globals.realtime()
+            pushVisuals()
+        end
     end)
 
     choose(startName)
