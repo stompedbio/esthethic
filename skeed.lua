@@ -1,5 +1,5 @@
 -- skeed
--- Tabs: HVH Config, HVH Extras, HVH More, Chat, Helper
+-- Tabs: HVH Config, HVH Extras, HVH More, HVH ESP, HVH Plus, Chat, Helper
 -- Network use: only the Chat tab, and only to the Server URL you type in.
 -- No loadstring, no obfuscation. Everything is reset when the script unloads.
 
@@ -93,11 +93,55 @@ local function keyOf(x)
 end
 
 local function learnSlot()
-    local ok, t = pcall(rage.get_target)
-    if not ok or type(t) ~= "table" or t.slot == nil or t.player == nil then return end
+    local t = curTarget()
+    if type(t) ~= "table" or t.slot == nil or t.player == nil then return end
     local ok2, id = pcall(function() return t.player.UserId end)
     if ok2 and id then slotMap[t.slot] = id end
 end
+
+
+-- PERFORMANCE HELPERS
+-- perf.rate is the HUD refresh interval (seconds), set from HVH Plus > Performance
+local perf = { rate = 0.1 }
+
+-- rage.get_target() is asked for by several callbacks per frame: ask once per ~30 ms
+local _tgt, _tgtAt = nil, -1
+local function curTarget()
+    local now = globals.realtime()
+    if now - _tgtAt > 0.03 then
+        local ok, t = pcall(rage.get_target)
+        _tgt = ok and t or nil
+        _tgtAt = now
+    end
+    return _tgt
+end
+
+-- text that is rebuilt at most every perf.rate seconds instead of every frame
+local fmtCache = {}
+local function cached(id, fn)
+    local now = globals.realtime()
+    local c = fmtCache[id]
+    if not c or now - c.t > perf.rate then
+        c = { t = now, v = fn() }
+        fmtCache[id] = c
+    end
+    return c.v
+end
+
+-- plist.set that skips writes whose value has not changed (refreshed once a second)
+local psetCache, psetAt = {}, 0
+local function pset(enemy, key, val)
+    local now = globals.realtime()
+    if now - psetAt > 1 then psetCache, psetAt = {}, now end
+    local id = keyOf(enemy)
+    local c = psetCache[id]
+    if not c then c = {}; psetCache[id] = c end
+    if c[key] ~= val then
+        c[key] = val
+        plist.set(enemy, key, val)
+    end
+end
+local function psetClear() psetCache = {} end
 
 -- MENU
 local tab = menu.new_tab("HVH Config", ICON)
@@ -153,11 +197,21 @@ local m_hs_vol    = misc_sec:new_slider("Hitsound Volume", 0, 300, 100, 0, "%")
 local m_hs_pitch  = misc_sec:new_slider("Hitsound Pitch", 50, 200, 100, 0, "%")
 
 -- ANTI-AIM
+local aaWas, aaSig, swayFn, swayAmt = false, nil, nil, nil
 onTick(function(tick)
     if not aa_enable:get() then
-        aa.reset()
+        if aaWas then aa.reset(); aaWas = false; aaSig = nil end
         return
     end
+    aaWas = true
+
+    -- unchanged settings are only re-sent every 12 ticks
+    local sig = table.concat({
+        tostring(aa_pitch:get()), tostring(aa_yaw:get()), tostring(aa_mod:get()), tostring(aa_sway_amt:get()),
+        tostring(aa_desync:get()), tostring(aa_invert:get()), tostring(aa_lag:get()), tostring(aa_lag_var:get()),
+    }, "|")
+    if sig == aaSig and globals.tickcount() % 12 ~= 0 then return end
+    aaSig = sig
 
     aa.override_pitch(aa_pitch:get())
     aa.override_yaw(aa_yaw:get(), "camera")
@@ -165,9 +219,11 @@ onTick(function(tick)
     local mod = aa_mod:get()
     if mod == "Sway" then
         local amt = aa_sway_amt:get()
-        aa.override_yaw_modifier(function(t, baseYaw)
-            return math.sin(t * 0.2) * amt
-        end)
+        if swayAmt ~= amt then
+            swayAmt = amt
+            swayFn = function(t, baseYaw) return math.sin(t * 0.2) * amt end
+        end
+        aa.override_yaw_modifier(swayFn)
     elseif mod == "Disabled" then
         aa.override_yaw_modifier("Disabled")
     else
@@ -235,34 +291,42 @@ onTick(function(tick)
     for _, enemy in ipairs(entity.get_enemies()) do
         if entity.is_alive(enemy) then
             local s = getState(enemy)
-            plist.set(enemy, "Force body yaw", true)
-            plist.set(enemy, "Override yaw offset", BRUTE_ANGLES[s.stage] or 0)
+            pset(enemy, "Force body yaw", true)
+            pset(enemy, "Override yaw offset", BRUTE_ANGLES[s.stage] or 0)
 
             local limit = res_baim:get()
             if limit > 0 and s.misses >= limit then
-                plist.set(enemy, "Override prefer body aim", "Force")
+                pset(enemy, "Override prefer body aim", "Force")
             else
-                plist.set(enemy, "Override prefer body aim", "-")
+                pset(enemy, "Override prefer body aim", "-")
             end
         end
     end
 end)
 
--- RAGEBOT OVERRIDES
+-- RAGEBOT OVERRIDES (re-applied when a setting changes, and every 16 ticks as a refresh)
+local rbWas, rbSig = false, nil
 onTick(function(tick)
     if not rb_enable:get() then
-        rage.reset()
+        if rbWas then rage.reset(); rbWas = false; rbSig = nil end
         return
     end
+    rbWas = true
 
-    rage.override_min_damage(rb_dmg:get())
-    rage.override_hitchance(rb_hc:get())
+    local dmg, hc = rb_dmg:get(), rb_hc:get()
+    local sig = dmg .. "|" .. hc .. "|" .. tostring(rb_target:get()) .. "|" ..
+        tostring(rb_baim_key:get()) .. "|" .. tostring(rb_safe_key:get())
+    if sig == rbSig and globals.tickcount() % 16 ~= 0 then return end
+    rbSig = sig
+
+    rage.override_min_damage(dmg)
+    rage.override_hitchance(hc)
     rage.override_target_selection(rb_target:get())
     rage.override_force_baim(rb_baim_key:get())
     rage.override_force_safe_point(rb_safe_key:get())
     rage.override_hitboxes({ "head", "chest", "pelvis", "legs" })
     rage.override_hitbox_priority({ "pelvis", "chest", "head" })
-    rage.set_hitbox_config("head", { min_damage = rb_dmg:get(), hitchance = rb_hc:get(), multipoint = true })
+    rage.set_hitbox_config("head", { min_damage = dmg, hitchance = hc, multipoint = true })
 end)
 
 -- VISUALS
@@ -285,7 +349,7 @@ applyChams()
 
 onEvent("paint", function()
     render.clear() -- recycle last frame's drawings so nothing stacks
-    local target = rage.get_target()
+    local target = curTarget()
 
     if v_target3d:get() and target and (target.aim_point or target.point) then
         render3d.box(CFrame.new(target.aim_point or target.point), Vector3.new(1.2, 1.2, 1.2), theme.target, 0.4, true)
@@ -303,13 +367,13 @@ onEvent("paint", function()
         if aa_enable:get() then
             local side = aa.get_inverter() and "RIGHT" or "LEFT"
             local choke = aa.is_fake_lag_choking() and "YES" or "NO"
-            line(string.format("AA: %d° [%s] | CHOKE: %s", aa_desync:get(), side, choke), theme.accent2)
+            line(cached("hud_aa", function() return string.format("AA: %d° [%s] | CHOKE: %s", aa_desync:get(), side, choke) end), theme.accent2)
         end
 
         if res_enable:get() then
             if target and target.slot ~= nil then
                 local s = getState(target.slot)
-                line(string.format("RESOLVER: %d° | MISS: %d", BRUTE_ANGLES[s.stage] or 0, s.misses), theme.accent)
+                line(cached("hud_res", function() return string.format("RESOLVER: %d° | MISS: %d", BRUTE_ANGLES[s.stage] or 0, s.misses) end), theme.accent)
             else
                 line("RESOLVER: ACTIVE", theme.sub)
             end
@@ -318,7 +382,7 @@ onEvent("paint", function()
         if rage.is_double_tap_charged() then
             line("DT: READY", theme.good)
         else
-            line(string.format("DT: %d/14", rage.get_double_tap_charge()), theme.bad)
+            line(cached("hud_dt", function() return string.format("DT: %d/14", rage.get_double_tap_charge()) end), theme.bad)
         end
     end
 end)
@@ -609,8 +673,8 @@ onEvent("paint", function()
         local ping = math.floor(client.latency() * 1000)
         local label = tostring(xv_wm_text:get() or "")
         if label == "" then label = "skeed.$win" end
-        local txt = label .. string.format(" | %d fps | %d ms", fps, ping)
-        local size = render.measure_text(txt, 14)
+        local txt = cached("wm", function() return label .. string.format(" | %d fps | %d ms", fps, ping) end)
+        local size = cached("wm_size", function() return render.measure_text(txt, 14) end)
         render.text(sw - size.X - 20, 12, txt, theme.accent, 14, true)
     end
 
@@ -618,9 +682,9 @@ onEvent("paint", function()
     if xv_stats:get() then
         local total = stats.hits + stats.misses
         local pct = total > 0 and math.floor(stats.hits / total * 100) or 0
-        render.text(20, 40, string.format("Hits %d | Misses %d | %d%% | Kills %d", stats.hits, stats.misses, pct, stats.kills), theme.accent, 14, true)
-        render.text(20, 58, string.format("Miss: resolver %d, spread %d, occ %d, death %d",
-            stats.reasons.resolver, stats.reasons.spread, stats.reasons.occlusion, stats.reasons.death),
+        render.text(20, 40, cached("st1", function() return string.format("Hits %d | Misses %d | %d%% | Kills %d", stats.hits, stats.misses, pct, stats.kills) end), theme.accent, 14, true)
+        render.text(20, 58, cached("st2", function() return string.format("Miss: resolver %d, spread %d, occ %d, death %d",
+            stats.reasons.resolver, stats.reasons.spread, stats.reasons.occlusion, stats.reasons.death) end),
             theme.sub, 13, true)
     end
 
@@ -662,7 +726,7 @@ onEvent("paint", function()
             local dir = xv_hat_flip:get() and -1 or 1
             local base = center + Vector3.new(0, dir * (half + 0.15) + xv_hat_off:get(), 0)
             local apex = base + Vector3.new(0, dir * height, 0)
-            local spokes = 18
+            local spokes = perf.spokes or 12
             local step = (2 * math.pi) / spokes
             local spin = globals.realtime() * xv_hat_spin:get()
 
@@ -679,7 +743,7 @@ onEvent("paint", function()
 
     -- ring under the current ragebot target
     if xv_ring:get() then
-        local target = rage.get_target()
+        local target = curTarget()
         if target and target.player then
             local pos = entity.get_player_position(target.player)
             if pos then
@@ -808,8 +872,8 @@ onTick(function(tick)
                         local ok, r = pcall(predictOffset, enemy, anim, off)
                         if ok and r then off = r end
                     end
-                    plist.set(enemy, "Force body yaw", true)
-                    plist.set(enemy, "Override yaw offset", off)
+                    pset(enemy, "Force body yaw", true)
+                    pset(enemy, "Override yaw offset", off)
                 end
             end
 
@@ -817,9 +881,9 @@ onTick(function(tick)
             if sr_air_sp:get() then
                 local info = entity.get_info(enemy)
                 if info and info.is_in_air then
-                    plist.set(enemy, "Override safe point", "Force")
+                    pset(enemy, "Override safe point", "Force")
                 else
-                    plist.set(enemy, "Override safe point", "-")
+                    pset(enemy, "Override safe point", "-")
                 end
             end
         end
@@ -884,14 +948,14 @@ onEvent("paint", function()
         if rage.is_double_tap_charged() then
             ind("DT", theme.good)
         else
-            ind(string.format("DT %d/14", rage.get_double_tap_charge()), theme.bad)
+            ind(cached("ind_dt", function() return string.format("DT %d/14", rage.get_double_tap_charge()) end), theme.bad)
         end
-        ind("DMG " .. tostring(rage.get_min_damage()), theme.text)
+        ind(cached("ind_dmg", function() return "DMG " .. tostring(rage.get_min_damage()) end), theme.text)
         if h_speed:get() then
-            ind(string.format("%s %d", tostring(movement.get_state()), math.floor(movement.get_speed() or 0)), theme.sub)
+            ind(cached("ind_spd", function() return string.format("%s %d", tostring(movement.get_state()), math.floor(movement.get_speed() or 0)) end), theme.sub)
         end
         if h_spread:get() then
-            ind(string.format("SPREAD %.2f  INACC %.2f", weapon.get_spread() or 0, weapon.get_inaccuracy() or 0), theme.warn)
+            ind(cached("ind_spr", function() return string.format("SPREAD %.2f  INACC %.2f", weapon.get_spread() or 0, weapon.get_inaccuracy() or 0) end), theme.warn)
         end
         if rage.is_force_baim() then ind("BAIM", theme.warn) end
         if rage.is_force_safe_point() then ind("SAFE", theme.header) end
@@ -1341,11 +1405,603 @@ do
     end)
 end
 
+-- HVH PLUS: situational ragebot rules + extra HUD
+local ptab      = menu.new_tab("HVH Plus", ICON)
+local p_rage    = ptab:new_section("Smart Ragebot", "Left")
+local p_hud     = ptab:new_section("Extra HUD", "Right")
+
+local pl_lethal   = p_rage:new_toggle("Lethal Min Damage", false)
+local pl_lethal_h = p_rage:new_slider("Only When Target HP Below", 10, 100, 60, 0, " hp")
+local pl_baim     = p_rage:new_toggle("Force Baim On Low HP", false)
+local pl_baim_hp  = p_rage:new_slider("Baim Below", 5, 100, 50, 0, " hp")
+local pl_air      = p_rage:new_toggle("Lower Hitchance On Airborne Target", false)
+local pl_air_hc   = p_rage:new_slider("Airborne Hitchance", 1, 100, 40, 0, "%")
+local pl_move     = p_rage:new_toggle("Lower Hitchance On Fast Target", false)
+local pl_move_spd = p_rage:new_slider("Fast Above", 5, 60, 25, 0, " st/s")
+local pl_move_hc  = p_rage:new_slider("Fast Target Hitchance", 1, 100, 50, 0, "%")
+
+local ph_dt       = p_hud:new_toggle("Double Tap Charge Bar", false)
+local ph_speed    = p_hud:new_toggle("Speed Indicator", false)
+local ph_enemies  = p_hud:new_toggle("Enemy Counter", false)
+local ph_near     = p_hud:new_toggle("Nearest Enemy Distance", false)
+local ph_target   = p_hud:new_toggle("Current Target Info", false)
+local ph_timer    = p_hud:new_toggle("Session Timer", false)
+local ph_streak   = p_hud:new_toggle("Hit Streak", false)
+local ph_vitals   = p_hud:new_toggle("Own HP / Armor Bar", false)
+
+local p_perf      = ptab:new_section("Performance", "Right")
+local pf_rate     = p_perf:new_slider("HUD Refresh Interval", 20, 500, 100, 0, " ms")
+local pf_hat      = p_perf:new_slider("China Hat Detail", 6, 24, 10, 0, " spokes")
+
+pf_rate:set_callback(function() perf.rate = pf_rate:get() / 1000 end)
+pf_hat:set_callback(function() perf.spokes = pf_hat:get() end)
+perf.rate, perf.spokes = pf_rate:get() / 1000, pf_hat:get()
+
+do
+    -- remembers what the ragebot had before we touched it, so it can be put back
+    local saved = { dmg = nil, hc = nil, baim = nil }
+    local sessionStart = globals.realtime()
+    local streak, bestStreak = 0, 0
+
+    local function restore(key, getFn, setFn)
+        if saved[key] ~= nil then
+            pcall(setFn, saved[key])
+            saved[key] = nil
+        end
+    end
+
+    local function remember(key, getFn)
+        if saved[key] == nil then
+            local ok, v = pcall(getFn)
+            if ok then saved[key] = v end
+        end
+    end
+
+    local function currentTarget()
+        local t = curTarget()
+        if type(t) == "table" and t.player then return t.player end
+        return nil
+    end
+
+    local function release()
+        restore("dmg", nil, rage.override_min_damage)
+        restore("hc", nil, rage.override_hitchance)
+        restore("baim", nil, rage.override_force_baim)
+    end
+
+    onTick(function()
+        local any = pl_lethal:get() or pl_baim:get() or pl_air:get() or pl_move:get()
+        if not any then release() return end
+
+        local tgt = currentTarget()
+        if not tgt or not entity.is_alive(tgt) then release() return end
+        local hp = entity.get_player_health(tgt)
+
+        -- lethal: shoot for exactly the damage that kills
+        if pl_lethal:get() and hp <= pl_lethal_h:get() then
+            remember("dmg", rage.get_min_damage)
+            rage.override_min_damage(math.max(1, math.floor(hp)))
+        else
+            restore("dmg", nil, rage.override_min_damage)
+        end
+
+        -- low hp: body shots only
+        if pl_baim:get() and hp <= pl_baim_hp:get() then
+            remember("baim", rage.is_force_baim)
+            rage.override_force_baim(true)
+        else
+            restore("baim", nil, rage.override_force_baim)
+        end
+
+        -- hitchance relaxations (the lower of the active ones wins)
+        local want
+        if pl_air:get() then
+            local info = entity.get_info(tgt)
+            if info and info.is_in_air then want = pl_air_hc:get() end
+        end
+        if pl_move:get() and entity.get_player_speed(tgt) >= pl_move_spd:get() then
+            local hc = pl_move_hc:get()
+            want = want and math.min(want, hc) or hc
+        end
+        if want then
+            remember("hc", rage.get_hitchance)
+            rage.override_hitchance(want)
+        else
+            restore("hc", nil, rage.override_hitchance)
+        end
+    end)
+
+    onEvent("shutdown", release)
+
+    onEvent("aim_hit", function()
+        streak = streak + 1
+        if streak > bestStreak then bestStreak = streak end
+    end)
+    onEvent("aim_miss", function() streak = 0 end)
+
+    onEvent("paint", function()
+        if not (ph_dt:get() or ph_speed:get() or ph_enemies:get() or ph_near:get() or ph_target:get()
+            or ph_timer:get() or ph_streak:get() or ph_vitals:get()) then return end
+        local sw, sh = render.screen_size()
+        local x, y = 20, math.floor(sh * 0.5)
+        local me = entity.get_local_player()
+
+        if ph_dt:get() then
+            local ok, ch = pcall(rage.get_double_tap_charge)
+            ch = ok and ch or 0
+            local frac = math.max(0, math.min(1, ch / 14))
+            render.text(x, y, "DT", theme.text, 13, true)
+            render.rect_filled(x + 24, y + 3, 100, 8, theme.panel, 3, 1)
+            if frac > 0 then
+                render.rect_filled(x + 24, y + 3, math.floor(100 * frac), 8, frac >= 1 and theme.good or theme.warn, 3, 2)
+            end
+            y = y + 18
+        end
+
+        if ph_speed:get() and me then
+            local ok, sp = pcall(entity.get_player_speed, me)
+            render.text(x, y, string.format("Speed %d", ok and sp or 0), theme.text, 13, true)
+            y = y + 16
+        end
+
+        local enemies = entity.get_enemies()
+        if ph_enemies:get() then
+            local alive = 0
+            for _, e in ipairs(enemies) do
+                if entity.is_alive(e) then alive = alive + 1 end
+            end
+            render.text(x, y, string.format("Enemies alive %d", alive), theme.text, 13, true)
+            y = y + 16
+        end
+
+        if ph_near:get() and me then
+            local myPos = entity.get_player_position(me)
+            local best, bestName
+            for _, e in ipairs(enemies) do
+                if entity.is_alive(e) then
+                    local d = (entity.get_player_position(e) - myPos).Magnitude
+                    if not best or d < best then best, bestName = d, nameOf(e) end
+                end
+            end
+            if best then
+                render.text(x, y, string.format("Nearest %s  %d studs", tostring(bestName), best), theme.text, 13, true)
+                y = y + 16
+            end
+        end
+
+        if ph_timer:get() then
+            local secs = math.floor(globals.realtime() - sessionStart)
+            local txt = cached("p_timer", function()
+                return string.format("Session %02d:%02d:%02d", secs // 3600, (secs // 60) % 60, secs % 60)
+            end)
+            render.text(x, y, txt, theme.sub, 13, true)
+            y = y + 16
+        end
+
+        if ph_streak:get() then
+            render.text(x, y, cached("p_streak", function()
+                return string.format("Streak %d  (best %d)", streak, bestStreak)
+            end), streak > 0 and theme.good or theme.sub, 13, true)
+            y = y + 16
+        end
+
+        if ph_vitals:get() and me then
+            local hp = math.max(0, math.min(100, entity.get_player_health(me) or 0))
+            local ar = math.max(0, math.min(100, entity.get_player_armor(me) or 0))
+            render.rect_filled(x, y + 2, 100, 6, theme.panel, 3, 1)
+            render.rect_filled(x, y + 2, math.floor(hp), 6, hp > 35 and theme.good or theme.bad, 3, 2)
+            render.rect_filled(x, y + 10, 100, 4, theme.panel, 2, 1)
+            render.rect_filled(x, y + 10, math.floor(ar), 4, theme.accent, 2, 2)
+            y = y + 20
+        end
+
+        if ph_target:get() then
+            local t = currentTarget()
+            if t and entity.is_alive(t) then
+                render.text(x, y, string.format("Target %s  %d hp", tostring(nameOf(t)), entity.get_player_health(t)), theme.accent, 13, true)
+            end
+        end
+    end)
+end
+
+-- HVH PLUS 2: weapon profiles, keybind overrides, close-range rules, respawn reset, warnings
+local p_wp   = ptab:new_section("Weapon Profiles", "Left")
+local wp_enable = p_wp:new_toggle("Weapon Profiles", false)
+local wp_s_dmg  = p_wp:new_slider("Sniper Min Damage", 1, 100, 90, 0, "")
+local wp_s_hc   = p_wp:new_slider("Sniper Hitchance", 1, 100, 70, 0, "%")
+local wp_p_dmg  = p_wp:new_slider("Pistol Min Damage", 1, 100, 40, 0, "")
+local wp_p_hc   = p_wp:new_slider("Pistol Hitchance", 1, 100, 60, 0, "%")
+local wp_m_dmg  = p_wp:new_slider("SMG Min Damage", 1, 100, 30, 0, "")
+local wp_m_hc   = p_wp:new_slider("SMG Hitchance", 1, 100, 55, 0, "%")
+local wp_o_dmg  = p_wp:new_slider("Rifle / Other Min Damage", 1, 100, 45, 0, "")
+local wp_o_hc   = p_wp:new_slider("Rifle / Other Hitchance", 1, 100, 65, 0, "%")
+
+local p_ko   = ptab:new_section("Keybind Overrides", "Right")
+local ko_dmg_on  = p_ko:new_keybind("Damage Override", "Hold", "G")
+local ko_dmg_val = p_ko:new_slider("Override Min Damage", 1, 100, 10, 0, "")
+local ko_hc_on   = p_ko:new_keybind("Hitchance Override", "Hold", "H")
+local ko_hc_val  = p_ko:new_slider("Override Hitchance", 1, 100, 30, 0, "%")
+local ko_head_on = p_ko:new_keybind("Head Only", "Hold", "J")
+local pl_close   = p_ko:new_toggle("Lower Hitchance At Close Range", false)
+local pl_close_d = p_ko:new_slider("Close Range Under", 3, 60, 20, 0, " studs")
+local pl_close_h = p_ko:new_slider("Close Range Hitchance", 1, 100, 35, 0, "%")
+local pl_respawn = p_ko:new_toggle("Reset Resolver On Enemy Respawn", true)
+local pl_lowhp   = p_ko:new_toggle("Low HP Warning", false)
+local pl_lowhp_v = p_ko:new_slider("Warn Below", 5, 60, 30, 0, " hp")
+
+do
+    local function weaponClass(name)
+        name = string.lower(tostring(name or ""))
+        if name:find("awp") or name:find("sniper") or name:find("scout") or name:find("ssg") or name:find("g3sg") then
+            return "Sniper"
+        elseif name:find("deagle") or name:find("revolver") or name:find("pistol") or name:find("glock")
+            or name:find("usp") or name:find("p250") or name:find("five") then
+            return "Pistol"
+        elseif name:find("smg") or name:find("mp5") or name:find("mp7") or name:find("mp9") or name:find("p90")
+            or name:find("ump") or name:find("mac10") or name:find("bizon") then
+            return "SMG"
+        end
+        return "Other"
+    end
+
+    local function profile(cls)
+        if cls == "Sniper" then return wp_s_dmg:get(), wp_s_hc:get()
+        elseif cls == "Pistol" then return wp_p_dmg:get(), wp_p_hc:get()
+        elseif cls == "SMG" then return wp_m_dmg:get(), wp_m_hc:get() end
+        return wp_o_dmg:get(), wp_o_hc:get()
+    end
+
+    local wpLast, wpOn = nil, false
+    local active = { dmg = false, hc = false, head = false, close = false }
+
+    -- hand control back to the normal ragebot overrides on the next tick
+    local function handBack()
+        rbSig = nil
+        wpLast = nil
+    end
+
+    onTick(function()
+        local tc = globals.tickcount()
+
+        -- weapon profile
+        if wp_enable:get() then
+            local me = entity.get_local_player()
+            local ok, nm = pcall(entity.get_player_weapon_name, me)
+            local cls = weaponClass(ok and nm or "")
+            if cls ~= wpLast or tc % 16 == 0 then
+                local d, h = profile(cls)
+                rage.override_min_damage(d)
+                rage.override_hitchance(h)
+                wpLast, wpOn = cls, true
+            end
+        elseif wpOn then
+            wpOn = false
+            handBack()
+        end
+
+        -- keybind overrides (held = on, released = back to normal)
+        local kd = ko_dmg_on:get()
+        if kd then rage.override_min_damage(ko_dmg_val:get()) end
+        if active.dmg and not kd then handBack() end
+        active.dmg = kd
+
+        local kh = ko_hc_on:get()
+        if kh then rage.override_hitchance(ko_hc_val:get()) end
+        if active.hc and not kh then handBack() end
+        active.hc = kh
+
+        local khead = ko_head_on:get()
+        if khead then rage.override_hitboxes({ "head" }) end
+        if active.head and not khead then handBack() end
+        active.head = khead
+
+        -- close range: easier hits at point blank
+        local closeNow = false
+        if pl_close:get() and not kh then
+            local t = curTarget()
+            local me = entity.get_local_player()
+            if t and t.player and me and entity.is_alive(t.player) then
+                local d = (entity.get_player_position(t.player) - entity.get_player_position(me)).Magnitude
+                if d <= pl_close_d:get() then
+                    rage.override_hitchance(pl_close_h:get())
+                    closeNow = true
+                end
+            end
+        end
+        if active.close and not closeNow then handBack() end
+        active.close = closeNow
+    end)
+
+    -- reset per-enemy resolver memory when an enemy comes back to life
+    local wasAlive = {}
+    onTick(function()
+        if not pl_respawn:get() or globals.tickcount() % 8 ~= 0 then return end
+        for _, e in ipairs(entity.get_enemies()) do
+            local id = keyOf(e)
+            local al = entity.is_alive(e)
+            if al and wasAlive[id] == false then
+                targetState[id] = nil
+                yawHist[id] = nil
+                psetClear()
+            end
+            wasAlive[id] = al
+        end
+    end)
+
+    p_wp:new_button("Print Weapon Class", function()
+        local me = entity.get_local_player()
+        local ok, nm = pcall(entity.get_player_weapon_name, me)
+        local cls = weaponClass(ok and nm or "")
+        local d, h = profile(cls)
+        client.log(string.format("[weapon] name=%s class=%s dmg=%d hc=%d", tostring(nm), cls, d, h))
+        notify("Weapon", string.format("%s -> %s (dmg %d, hc %d)", tostring(nm), cls, d, h), 3, false)
+    end)
+
+    onEvent("paint", function()
+        if not pl_lowhp:get() then return end
+        local me = entity.get_local_player()
+        if not me then return end
+        local hp = entity.get_player_health(me) or 100
+        if hp > 0 and hp <= pl_lowhp_v:get() then
+            local sw, sh = render.screen_size()
+            local pulse = 0.6 + 0.4 * math.sin(globals.realtime() * 6)
+            render.text(sw / 2, sh * 0.72, "LOW HP  " .. math.floor(hp), theme.bad, 16 + math.floor(pulse * 2), true, true)
+        end
+    end)
+end
+
+-- FLOAT / MOVEMENT (HVH Plus tab)
+-- "Float" lowers the world gravity for you (slow fall / hover) and caps how fast you can fall.
+local p_fl      = ptab:new_section("Float (Slow Gravity)", "Left")
+local fl_key    = p_fl:new_keybind("Float", "Toggle", "K")
+local fl_grav   = p_fl:new_slider("Gravity", 0, 196, 30, 0, "")
+local fl_cap    = p_fl:new_slider("Max Fall Speed (0 = off)", 0, 100, 10, 0, " st/s")
+local fl_ind    = p_fl:new_toggle("Float Indicator", true)
+
+local p_mv      = ptab:new_section("Movement", "Right")
+local ms_speed_on = p_mv:new_toggle("Walk Speed", false)
+local ms_speed    = p_mv:new_slider("Walk Speed Value", 16, 60, 24, 0, "")
+local ms_jump_on  = p_mv:new_toggle("Jump Boost", false)
+local ms_jump     = p_mv:new_slider("Jump Boost Amount", 100, 300, 150, 0, "%")
+
+do
+    local Workspace = game:GetService("Workspace")
+    local Players = game:GetService("Players")
+
+    -- keep the real gravity across script reloads
+    local origGravity = _G.__skeed_gravity
+    if type(origGravity) ~= "number" then
+        origGravity = Workspace.Gravity
+        _G.__skeed_gravity = origGravity
+    end
+
+    local function character()
+        local ok, c = pcall(function() return Players.LocalPlayer.Character end)
+        return ok and c or nil
+    end
+
+    local floating = false
+    local function setFloat(on)
+        if on then
+            pcall(function() Workspace.Gravity = fl_grav:get() end)
+        else
+            pcall(function() Workspace.Gravity = origGravity end)
+        end
+        floating = on
+    end
+
+    local savedHum = nil
+    local function restoreHum(hum)
+        if savedHum and hum then
+            pcall(function()
+                hum.WalkSpeed = savedHum.ws
+                hum.JumpPower = savedHum.jp
+                hum.JumpHeight = savedHum.jh
+            end)
+        end
+    end
+
+    local lastHum
+    onTick(function()
+        local want = fl_key:get()
+        if want then
+            -- gravity slider can change while floating, so keep it in sync
+            local okg, g = pcall(function() return Workspace.Gravity end)
+            if not floating or (okg and math.abs(g - fl_grav:get()) > 0.5) then setFloat(true) end
+
+            local cap = fl_cap:get()
+            if cap > 0 then
+                local c = character()
+                local root = c and c:FindFirstChild("HumanoidRootPart")
+                if root then
+                    pcall(function()
+                        local v = root.AssemblyLinearVelocity
+                        if v.Y < -cap then
+                            root.AssemblyLinearVelocity = Vector3.new(v.X, -cap, v.Z)
+                        end
+                    end)
+                end
+            end
+        elseif floating then
+            setFloat(false)
+        end
+
+        -- walk speed / jump boost, original values are remembered and put back
+        local c = character()
+        local hum = c and c:FindFirstChildOfClass("Humanoid")
+        if hum ~= lastHum then savedHum = nil; lastHum = hum end
+        if hum then
+            local any = ms_speed_on:get() or ms_jump_on:get()
+            if any and not savedHum then
+                savedHum = { ws = hum.WalkSpeed, jp = hum.JumpPower, jh = hum.JumpHeight }
+            end
+            if savedHum then
+                pcall(function()
+                    hum.WalkSpeed = ms_speed_on:get() and ms_speed:get() or savedHum.ws
+                    local mult = ms_jump_on:get() and (ms_jump:get() / 100) or 1
+                    hum.JumpPower = savedHum.jp * mult
+                    hum.JumpHeight = savedHum.jh * mult
+                end)
+                if not any then savedHum = nil end
+            end
+        end
+    end)
+
+    onEvent("shutdown", function()
+        setFloat(false)
+        restoreHum(lastHum)
+    end)
+
+    onEvent("paint", function()
+        if not (fl_ind:get() and fl_key:get()) then return end
+        local sw, sh = render.screen_size()
+        render.text(sw / 2, sh * 0.66, "FLOAT", theme.accent, 14, true, true)
+    end)
+
+    p_fl:new_button("Reset Gravity", function()
+        setFloat(false)
+        pcall(function() Workspace.Gravity = origGravity end)
+        notify("Float", "Gravity restored to " .. tostring(origGravity), 3, false)
+    end)
+end
+
+-- DESYNC ENGINE (HVH Plus tab)
+-- Drives the body yaw directly every tick, after all other anti-aim code,
+-- using only the documented trio: override_body_yaw / override_inverter /
+-- override_desync_limits. The side is picked by the mode below.
+local p_ds       = ptab:new_section("Desync Engine", "Left")
+local ds_enable  = p_ds:new_toggle("Desync Engine", true)
+local ds_mode    = p_ds:new_combobox("Side Mode", { "Static", "Jitter", "Random", "Freestanding", "Flip On Hit" }, "Jitter")
+local ds_left    = p_ds:new_slider("Left Limit", 0, 86, 58, 0, "°")
+local ds_right   = p_ds:new_slider("Right Limit", 0, 86, 58, 0, "°")
+local ds_rand    = p_ds:new_slider("Randomize Amount", 0, 30, 0, 0, "°")
+local ds_ticks   = p_ds:new_slider("Flip Every", 1, 16, 4, 0, " ticks")
+local ds_ghost   = p_ds:new_toggle("Show Fake Model", true)
+local ds_ind     = p_ds:new_toggle("Desync Indicator", true)
+
+do
+    local ds = { rnd = false, nextFlip = 0, hitSide = false, lastHp = nil, inv = false, lim = 0 }
+
+    -- the state-based desync (HVH Extras) calls override_desync every tick and would fight
+    -- with this engine, so it is switched off when the engine is switched on
+    ds_enable:set_callback(function()
+        if ds_enable:get() and st_enable:get() then
+            st_enable:set(false, true)
+            notify("Desync", "State-based desync turned off (engine is active)", 3, false)
+        end
+    end)
+
+    if ds_enable:get() and st_enable:get() then st_enable:set(false, true) end
+
+    local function wrap(d) return (d + 180) % 360 - 180 end
+
+    local function freestandSide()
+        local me = entity.get_local_player()
+        if not me then return nil end
+        local myPos = entity.get_player_position(me)
+        local best, bestPos
+        for _, e in ipairs(entity.get_enemies()) do
+            if entity.is_alive(e) then
+                local p = entity.get_player_position(e)
+                local d = (p - myPos).Magnitude
+                if not best or d < best then best, bestPos = d, p end
+            end
+        end
+        if not bestPos then return nil end
+        local _, myYaw = entity.get_player_angles_deg(me)
+        local dir = bestPos - myPos
+        local toEnemy = math.deg(math.atan2(-dir.X, -dir.Z))
+        local delta = wrap(toEnemy - myYaw)
+        -- fake side faces the enemy: enemy on the left -> inverter false (fake left)
+        return delta <= 0
+    end
+
+    onTick(function()
+        if not (ds_enable:get() and aa_enable:get()) then return end
+        local tc = globals.tickcount()
+        local mode = ds_mode:get()
+        local step = ds_ticks:get()
+        local inv = false
+
+        if mode == "Jitter" then
+            inv = (math.floor(tc / step) % 2 == 1)
+        elseif mode == "Random" then
+            if tc >= ds.nextFlip then
+                ds.rnd = math.random() < 0.5
+                ds.nextFlip = tc + step * math.random(1, 3)
+            end
+            inv = ds.rnd
+        elseif mode == "Freestanding" then
+            local f = freestandSide()
+            if f == nil then f = ds.inv end
+            inv = f
+        elseif mode == "Flip On Hit" then
+            local me = entity.get_local_player()
+            local hp = me and entity.get_player_health(me)
+            if hp then
+                if ds.lastHp and hp < ds.lastHp then ds.hitSide = not ds.hitSide end
+                ds.lastHp = hp
+            end
+            inv = ds.hitSide
+        end
+
+        -- the Invert Side key still flips whatever the mode chose
+        if aa_invert:get() then inv = not inv end
+        ds.inv = inv
+
+        local r = ds_rand:get()
+        local l = ds_left:get()
+        local rt = ds_right:get()
+        if r > 0 then
+            l = math.max(0, math.min(86, l + math.random(-r, r)))
+            rt = math.max(0, math.min(86, rt + math.random(-r, r)))
+        end
+        ds.lim = inv and rt or l
+
+        aa.override_body_yaw(true)
+        aa.override_inverter(inv)
+        aa.override_desync_limits(l, rt)
+        if ds_ghost:get() then aa.override_show_fake(true) end
+    end)
+
+    local function readout()
+        local ok1, fake = pcall(aa.get_fake_lby_deg)
+        local ok2, real = pcall(aa.get_lby_deg)
+        local ok3, twist = pcall(aa.get_twist_deg)
+        return ok1 and fake or 0, ok2 and real or 0, ok3 and twist or 0
+    end
+
+    p_ds:new_button("Print Desync Debug", function()
+        local fake, real, twist = readout()
+        client.log(string.format("[desync] engine=%s mode=%s side=%s limit=%d fakeFeet=%.1f realFeet=%.1f twist=%.1f choke=%s",
+            tostring(ds_enable:get()), ds_mode:get(), ds.inv and "right" or "left", ds.lim, fake, real, twist,
+            tostring(aa.is_fake_lag_choking())))
+        notify("Desync", string.format("twist %.0f° | fake %.0f° | real %.0f°", twist, fake, real), 3, false)
+    end)
+
+    onEvent("paint", function()
+        if not (ds_ind:get() and ds_enable:get() and aa_enable:get()) then return end
+        local sw, sh = render.screen_size()
+        local snap = cached("ds_ind", function()
+            local _, _, tw = readout()
+            return { tw = tw, l1 = string.format("DESYNC %s  %d°", ds.inv and "RIGHT" or "LEFT", ds.lim),
+                     l2 = string.format("twist %d°", math.floor(tw + 0.5)) }
+        end)
+        local twist = snap.tw
+        local x, y = 20, math.floor(sh * 0.5) + 110
+        render.text(x, y, snap.l1, theme.accent, 13, true)
+        render.text(x, y + 16, snap.l2, theme.sub, 12, true)
+        local frac = math.max(0, math.min(1, math.abs(twist) / 86))
+        render.rect_filled(x, y + 32, 100, 6, theme.panel, 3, 1)
+        if frac > 0 then render.rect_filled(x, y + 32, math.floor(100 * frac), 6, theme.accent, 3, 2) end
+    end)
+end
+
 -- CONFIG SHARING: "Show Code" / "Load Code" (codes start with SKEED)
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 11
+local CODE_VERSION = 16
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -1361,6 +2017,13 @@ local CFG = {
     xv_watermark, xv_stats, xv_predict, xv_pred_tick, u_log,
     fl_state, fl_stand, fl_run, fl_air,
     sr_anim, sr_air_sp, yp_enable, yp_time, yp_jitter,
+    pl_lethal, pl_lethal_h, pl_baim, pl_baim_hp, pl_air, pl_air_hc, pl_move, pl_move_spd, pl_move_hc,
+    ph_dt, ph_speed, ph_enemies, ph_near, ph_target,
+    ph_timer, ph_streak, ph_vitals, pf_rate, pf_hat,
+    fl_grav, fl_cap, fl_ind, ms_speed_on, ms_speed, ms_jump_on, ms_jump,
+    wp_enable, wp_s_dmg, wp_s_hc, wp_p_dmg, wp_p_hc, wp_m_dmg, wp_m_hc, wp_o_dmg, wp_o_hc,
+    ko_dmg_val, ko_hc_val, pl_close, pl_close_d, pl_close_h, pl_respawn, pl_lowhp, pl_lowhp_v,
+    ds_enable, ds_mode, ds_left, ds_right, ds_rand, ds_ticks, ds_ghost, ds_ind,
     h_cross, h_keys, h_hitlog, h_weapon,
     sp_enable, sp_speed, sp_maxspd, sp_scope, sp_adapt, sp_step,
     x_fake, x_ext_on, x_ext_amt, x_fpitch,
@@ -2253,6 +2916,7 @@ onEvent("shutdown", function()
     aa.reset()
     rage.reset()
     plist.reset_all()
+    psetClear()
     chams.clear_overrides()
     sounds.reset_hitsound()
     sounds.reset_killsound()
