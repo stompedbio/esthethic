@@ -433,21 +433,6 @@ local man_left  = x_aa:new_keybind("Manual Left", "Toggle", "Left")
 local man_right = x_aa:new_keybind("Manual Right", "Toggle", "Right")
 local man_back  = x_aa:new_keybind("Manual Back", "Toggle", "Down")
 
--- Movement-state body yaw (real/fake angles)
-local st_enable = x_aa:new_toggle("Body Yaw By Movement", true)
-local st_stand  = x_aa:new_slider("Standing Desync Limit", 0, 86, 86, 0, "°")
-local st_run    = x_aa:new_slider("Running Desync Limit", 0, 86, 58, 0, "°")
-local st_crouch = x_aa:new_slider("Crouching Desync Limit", 0, 86, 75, 0, "°")
-local st_air    = x_aa:new_slider("In-Air Desync Limit", 0, 86, 45, 0, "°")
-local st_stand_real = x_aa:new_slider("Standing Real Body Yaw", -86, 86, 0, 0, "°")
-local st_stand_fake = x_aa:new_slider("Standing Fake Body Yaw", -86, 86, 58, 0, "°")
-local st_run_real   = x_aa:new_slider("Moving Real Body Yaw", -86, 86, 0, 0, "°")
-local st_run_fake   = x_aa:new_slider("Moving Fake Body Yaw", -86, 86, 58, 0, "°")
-local st_crouch_real = x_aa:new_slider("Crouch Real Body Yaw", -86, 86, 0, 0, "°")
-local st_crouch_fake = x_aa:new_slider("Crouch Fake Body Yaw", -86, 86, 58, 0, "°")
-local st_air_real   = x_aa:new_slider("Air Real Body Yaw", -86, 86, 0, 0, "°")
-local st_air_fake   = x_aa:new_slider("Air Fake Body Yaw", -86, 86, 45, 0, "°")
-
 -- Defensive AA
 local def_enable   = x_aa:new_toggle("Defensive AA", false)
 local def_interval = x_aa:new_slider("Defensive Interval", 8, 64, 24, 0, " ticks")
@@ -458,11 +443,6 @@ local x_ext_on  = x_aa:new_toggle("Extended Angles", false)
 local x_ext_amt = x_aa:new_slider("Extended Angles Amount", -100, 100, 50, 0, "%")
 local x_fpitch  = x_aa:new_combobox("Fake Pitch", { "Disabled", "Down", "Up", "Zero" }, "Disabled")
 
--- Weapon-based damage
-local wp_enable = x_rage:new_toggle("Per-Weapon Min Damage", true)
-local wp_sniper = x_rage:new_slider("Sniper Min Damage", 1, 100, 80, 0, " hp")
-local wp_pistol = x_rage:new_slider("Pistol Min Damage", 1, 100, 35, 0, " hp")
-local wp_other  = x_rage:new_slider("Other Min Damage", 1, 100, 45, 0, " hp")
 
 -- Extra visuals
 local xv_watermark = x_vis:new_toggle("Watermark", true)
@@ -553,26 +533,6 @@ onTick(function(tick)
     else
         aa.set_manual(nil)
     end
-
-    -- Apply independently adjustable real/fake body yaw for each movement state.
-    if st_enable:get() then
-        local state = movement.get_state()
-        local lim, realYaw, fakeYaw
-        if state == "InAir" then
-            lim, realYaw, fakeYaw = st_air:get(), st_air_real:get(), st_air_fake:get()
-        elseif state == "Crouching" then
-            lim, realYaw, fakeYaw = st_crouch:get(), st_crouch_real:get(), st_crouch_fake:get()
-        elseif state == "Running" then
-            lim, realYaw, fakeYaw = st_run:get(), st_run_real:get(), st_run_fake:get()
-        else
-            lim, realYaw, fakeYaw = st_stand:get(), st_stand_real:get(), st_stand_fake:get()
-        end
-        if aa_invert:get() then
-            realYaw, fakeYaw = -realYaw, -fakeYaw
-        end
-        aa.override_desync_limits(lim, lim)
-        aa.override_desync(realYaw, fakeYaw)
-    end
 end)
 
 local defensiveUntil = 0
@@ -609,25 +569,6 @@ onTick(function(tick)
     else
         aa.override_fake_pitch(fp)
     end
-end)
-
--- EXTRAS: weapon-based min damage
-onTick(function(tick)
-    if not rb_enable:get() or not wp_enable:get() then return end
-
-    local wep = weapon.get_active()
-    if not wep then return end
-
-    local t = string.lower(tostring(wep.type or ""))
-    local dmg
-    if string.find(t, "sniper") then
-        dmg = wp_sniper:get()
-    elseif string.find(t, "pistol") then
-        dmg = wp_pistol:get()
-    else
-        dmg = wp_other:get()
-    end
-    rage.override_min_damage(dmg)
 end)
 
 -- EXTRAS: stats + shot logging
@@ -1847,15 +1788,196 @@ do
     end)
 end
 
--- DESYNC ENGINE (HVH Plus tab)
+-- RESOLVER SHADOW (HVH Plus tab)
+-- Log-only: reads every enemy's real desync side from the animstate (goal feet yaw minus eye yaw),
+-- tracks how often they flip, predicts the side they will be on when our shot lands, and compares that
+-- with what the resolver actually did. It never writes to plist or the ragebot.
+local p_sh      = ptab:new_section("Resolver Shadow", "Right")
+local sh_enable = p_sh:new_toggle("Shadow Mode (log only)", false)
+local sh_lead   = p_sh:new_slider("Lead (-1 = ping)", -1, 12, -1, 0, " t")
+local sh_max    = p_sh:new_slider("Max Offset", 20, 86, 58, 0, "°")
+local sh_panel  = p_sh:new_toggle("Shadow Panel", false)
+
+local Shadow = {}   -- plain functions, kept free of menu code so they can be unit tested
+do
+    local function wrap(d) return (d + 180) % 360 - 180 end
+    Shadow.wrap = wrap
+
+    function Shadow.newRec()
+        return { side = 0, lastFlip = 0, ints = {}, des = 0, ema = 0, api = 0, apiMin = 1e9, apiMax = -1e9,
+                 n = 0, apiOff = 0, state = "Stand", flips = 0 }
+    end
+
+    -- one sample: eye/feet yaw from the animstate, api = anim.desync, now = tick counter
+    function Shadow.update(rec, eye, feet, api, now, state)
+        local des = wrap(feet - eye)
+        rec.des = des
+        rec.ema = rec.ema * 0.97 + math.abs(des) * 0.03
+        rec.n = rec.n + 1
+        rec.state = state or rec.state
+        if api then
+            rec.api = api
+            if api < rec.apiMin then rec.apiMin = api end
+            if api > rec.apiMax then rec.apiMax = api end
+            if math.abs(math.abs(api) - math.abs(des)) > 25 then rec.apiOff = rec.apiOff + 1 end
+        end
+        local side = des > 10 and 1 or (des < -10 and -1 or 0)
+        if side ~= 0 then
+            if rec.side == 0 then
+                rec.lastFlip = now
+            elseif side ~= rec.side then
+                rec.ints[#rec.ints + 1] = now - rec.lastFlip
+                if #rec.ints > 12 then table.remove(rec.ints, 1) end
+                rec.flips = rec.flips + 1
+                rec.lastFlip = now
+            end
+            rec.side = side
+        end
+    end
+
+    -- label, ticks until the next flip (nil while learning)
+    function Shadow.pattern(rec, now)
+        local n = #rec.ints
+        if n < 4 then return "learning", nil end
+        local sum = 0
+        for i = 1, n do sum = sum + rec.ints[i] end
+        local mean = sum / n
+        local var = 0
+        for i = 1, n do var = var + (rec.ints[i] - mean) ^ 2 end
+        local std = math.sqrt(var / n)
+        local label
+        if mean <= 2.3 then label = "per-tick jitter"
+        elseif std <= 1.2 then label = string.format("fixed ~%.0ft", mean)
+        else label = string.format("variable %.0f+-%.0ft", mean, std) end
+        return label, math.max(0, math.floor(mean - (now - rec.lastFlip) + 0.5))
+    end
+
+    -- the pick: read side, or the opposite side when their next flip lands before our shot
+    function Shadow.pick(rec, now, lead, maxOff)
+        if rec.side == 0 then return nil end
+        local label, nextIn = Shadow.pattern(rec, now)
+        local side, src = rec.side, "read"
+        if nextIn ~= nil and nextIn <= lead then side, src = -rec.side, "pred" end
+        local mag = math.min(math.max(math.abs(rec.des), rec.ema), maxOff)
+        return { side = side, off = math.floor(side * mag + 0.5), src = src, pat = label }
+    end
+end
+
+do
+    local recs, tickN = {}, 0
+    local fired = {}                       -- last shadow pick at fire time, per enemy
+    local score = { shots = 0, agree = 0, agreeHit = 0, disagree = 0, disagreeHit = 0 }
+
+    local function leadTicks()
+        local l = sh_lead:get()
+        if l >= 0 then return l end
+        local ok, lat = pcall(client.latency)
+        local ok2, ti = pcall(globals.tickinterval)
+        if not ok or type(lat) ~= "number" then return 1 end
+        ti = (ok2 and type(ti) == "number" and ti > 0) and ti or 0.015625
+        return math.max(1, math.floor(lat / ti + 0.5) + 1)
+    end
+
+    onTick(function()
+        if not sh_enable:get() then return end
+        tickN = tickN + 1
+        for _, e in ipairs(entity.get_enemies()) do
+            if entity.is_alive(e) then
+                local ok, anim = pcall(entity.get_anim_state, e)
+                if ok and anim and anim.eye_angles_y and anim.goal_feet_yaw then
+                    local id = keyOf(e)
+                    local r = recs[id]
+                    if not r then r = Shadow.newRec(); recs[id] = r end
+                    local oki, info = pcall(entity.get_info, e)
+                    Shadow.update(r, anim.eye_angles_y, anim.goal_feet_yaw, anim.desync, tickN,
+                        oki and info and info.state or nil)
+                end
+            end
+        end
+    end)
+
+    onEvent("aim_fire", function(e)
+        if not sh_enable:get() or not e.target then return end
+        local r = recs[keyOf(e.target)]
+        if not r then return end
+        local pick = Shadow.pick(r, tickN, leadTicks(), sh_max:get())
+        if not pick then return end
+        local h = yawHist[keyOf(e.target)]
+        local used = h and h.out or 0
+        pick.agree = (used > 0) == (pick.off > 0) and used ~= 0
+        pick.used = used
+        fired[keyOf(e.target)] = pick
+        client.log(string.format("[shadow] fire %s | read side %d des %.0f api %.0f | pick %d (%s, %s) | resolver used %.0f | %s",
+            tostring(nameOf(e.target)), r.side, r.des, r.api, pick.off, pick.src, pick.pat, used, r.state))
+    end)
+
+    local function settle(e, hit)
+        if not sh_enable:get() or not e.target then return end
+        local pick = fired[keyOf(e.target)]
+        if not pick then return end
+        fired[keyOf(e.target)] = nil
+        score.shots = score.shots + 1
+        if pick.agree then
+            score.agree = score.agree + 1
+            if hit then score.agreeHit = score.agreeHit + 1 end
+        else
+            score.disagree = score.disagree + 1
+            if hit then score.disagreeHit = score.disagreeHit + 1 end
+        end
+    end
+    onEvent("aim_hit", function(e) settle(e, true) end)
+    onEvent("aim_miss", function(e) settle(e, false) end)
+
+    p_sh:new_button("Print Shadow Summary", function()
+        client.log(string.format("[shadow] shots %d | agreed with resolver %d (hit %d) | disagreed %d (hit %d)",
+            score.shots, score.agree, score.agreeHit, score.disagree, score.disagreeHit))
+        for id, r in pairs(recs) do
+            local label = Shadow.pattern(r, tickN)
+            client.log(string.format("[shadow] %s | samples %d | flips %d | %s | anim.desync range %.0f..%.0f | differs from feet-eye in %d samples",
+                tostring(id), r.n, r.flips, label, r.apiMin, r.apiMax, r.apiOff))
+        end
+        notify("Shadow", string.format("%d shots logged, see console", score.shots), 3, false)
+    end)
+
+    p_sh:new_button("Reset Shadow Data", function()
+        recs, fired = {}, {}
+        for k in pairs(score) do score[k] = 0 end
+    end)
+
+    onEvent("paint", function()
+        if not (sh_enable:get() and sh_panel:get()) then return end
+        local sw, sh = render.screen_size()
+        local x, y = sw - 280, math.floor(sh * 0.5)
+        render.text(x, y, "SHADOW", theme.accent, 13, true)
+        local rows = cached("shadow_panel", function()
+            local out = {}
+            for _, e in ipairs(entity.get_enemies()) do
+                local r = entity.is_alive(e) and recs[keyOf(e)]
+                if r then
+                    local label = Shadow.pattern(r, tickN)
+                    out[#out + 1] = string.format("%s  %s  des %d  api %d  %s", tostring(nameOf(e)), r.state, r.des, r.api, label)
+                end
+            end
+            return out
+        end)
+        for i, t in ipairs(rows) do
+            if i > 6 then break end
+            render.text(x, y + i * 15, t, theme.text, 12, true)
+        end
+    end)
+end
+
+-- DESYNC (HVH Plus tab): per-state limits + side modes, replaces the old movement-state body yaw
 -- Drives the body yaw directly every tick, after all other anti-aim code,
 -- using only the documented trio: override_body_yaw / override_inverter /
 -- override_desync_limits. The side is picked by the mode below.
-local p_ds       = ptab:new_section("Desync Engine", "Left")
-local ds_enable  = p_ds:new_toggle("Desync Engine", true)
+local p_ds       = ptab:new_section("Desync", "Left")
+local ds_enable  = p_ds:new_toggle("Custom Desync", true)
 local ds_mode    = p_ds:new_combobox("Side Mode", { "Static", "Jitter", "Random", "Freestanding", "Flip On Hit" }, "Jitter")
-local ds_left    = p_ds:new_slider("Left Limit", 0, 86, 58, 0, "°")
-local ds_right   = p_ds:new_slider("Right Limit", 0, 86, 58, 0, "°")
+local ds_stand   = p_ds:new_slider("Standing Limit", 0, 86, 86, 0, "°")
+local ds_run     = p_ds:new_slider("Running Limit", 0, 86, 58, 0, "°")
+local ds_crouch  = p_ds:new_slider("Crouching Limit", 0, 86, 75, 0, "°")
+local ds_air     = p_ds:new_slider("In-Air Limit", 0, 86, 45, 0, "°")
 local ds_rand    = p_ds:new_slider("Randomize Amount", 0, 30, 0, 0, "°")
 local ds_ticks   = p_ds:new_slider("Flip Every", 1, 16, 4, 0, " ticks")
 local ds_ghost   = p_ds:new_toggle("Show Fake Model", true)
@@ -1863,17 +1985,6 @@ local ds_ind     = p_ds:new_toggle("Desync Indicator", true)
 
 do
     local ds = { rnd = false, nextFlip = 0, hitSide = false, lastHp = nil, inv = false, lim = 0 }
-
-    -- the state-based desync (HVH Extras) calls override_desync every tick and would fight
-    -- with this engine, so it is switched off when the engine is switched on
-    ds_enable:set_callback(function()
-        if ds_enable:get() and st_enable:get() then
-            st_enable:set(false, true)
-            notify("Desync", "State-based desync turned off (engine is active)", 3, false)
-        end
-    end)
-
-    if ds_enable:get() and st_enable:get() then st_enable:set(false, true) end
 
     local function wrap(d) return (d + 180) % 360 - 180 end
 
@@ -1931,14 +2042,17 @@ do
         if aa_invert:get() then inv = not inv end
         ds.inv = inv
 
+        -- limit follows the movement state
+        local okS, state = pcall(movement.get_state)
+        local base
+        if state == "InAir" then base = ds_air:get()
+        elseif state == "Crouching" then base = ds_crouch:get()
+        elseif state == "Running" then base = ds_run:get()
+        else base = ds_stand:get() end
         local r = ds_rand:get()
-        local l = ds_left:get()
-        local rt = ds_right:get()
-        if r > 0 then
-            l = math.max(0, math.min(86, l + math.random(-r, r)))
-            rt = math.max(0, math.min(86, rt + math.random(-r, r)))
-        end
-        ds.lim = inv and rt or l
+        if r > 0 then base = math.max(0, math.min(86, base + math.random(-r, r))) end
+        local l, rt = base, base
+        ds.lim = base
 
         aa.override_body_yaw(true)
         aa.override_inverter(inv)
@@ -1983,7 +2097,7 @@ end
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 17
+local CODE_VERSION = 19
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -1993,9 +2107,7 @@ local CFG = {
     rb_enable, rb_dmg, rb_hc, rb_target,
     v_chams, v_chams_mat, v_vis_col, v_hid_col, v_hud, v_target3d,
     m_hitsound, m_killsound, m_clantag, m_tag_text, m_tag_anim, m_killsay,
-    st_enable, st_stand, st_run, st_crouch, st_air,
     def_enable, def_interval,
-    wp_enable, wp_sniper, wp_pistol, wp_other,
     xv_watermark, xv_stats, xv_predict, xv_pred_tick, u_log,
     fl_state, fl_stand, fl_run, fl_air,
     sr_anim, sr_air_sp, yp_enable, yp_time, yp_jitter,
@@ -2005,7 +2117,8 @@ local CFG = {
     wp_enable, wp_s_dmg, wp_s_hc, wp_p_dmg, wp_p_hc, wp_m_dmg, wp_m_hc, wp_o_dmg, wp_o_hc,
     ko_dmg_val, ko_hc_val, pl_close, pl_close_d, pl_close_h, pl_respawn, pl_lowhp, pl_lowhp_v,
     pv_log, pv_log_n, pv_log_t, pv_res,
-    ds_enable, ds_mode, ds_left, ds_right, ds_rand, ds_ticks, ds_ghost, ds_ind,
+    sh_enable, sh_lead, sh_max, sh_panel,
+    ds_enable, ds_mode, ds_stand, ds_run, ds_crouch, ds_air, ds_rand, ds_ticks, ds_ghost, ds_ind,
     h_cross, h_keys, h_hitlog, h_weapon,
     sp_enable, sp_speed, sp_maxspd, sp_scope, sp_adapt, sp_step,
     x_fake, x_ext_on, x_ext_amt, x_fpitch,
@@ -2019,8 +2132,6 @@ local CFG = {
     fov_enable, fov_r, fov_col, am_enable, am_pct,
     cu_enable, cu_style, cu_size, cu_speed, cu_col, cu_hide, cu_offx, cu_offy,
     sc_enable, sc_gap, sc_thick, sc_dot, sc_col, sc_hide,
-    st_stand_real, st_stand_fake, st_run_real, st_run_fake,
-    st_crouch_real, st_crouch_fake, st_air_real, st_air_fake,
 }
 
 -- base64 (pure Lua)
