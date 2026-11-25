@@ -1750,118 +1750,100 @@ do
     end)
 end
 
--- FLOAT / MOVEMENT (HVH Plus tab)
--- "Float" lowers the world gravity for you (slow fall / hover) and caps how fast you can fall.
-local p_fl      = ptab:new_section("Float (Slow Gravity)", "Left")
-local fl_key    = p_fl:new_keybind("Float", "Toggle", "K")
-local fl_grav   = p_fl:new_slider("Gravity", 0, 196, 30, 0, "")
-local fl_cap    = p_fl:new_slider("Max Fall Speed (0 = off)", 0, 100, 10, 0, " st/s")
-local fl_ind    = p_fl:new_toggle("Float Indicator", true)
+-- PRESETS, SHOT LOG, RESOLVER PANEL (HVH Plus tab)
+local p_pre   = ptab:new_section("Presets", "Right")
+local pr_aa   = p_pre:new_combobox("Anti-Aim Preset", { "Custom", "Legit", "Jitter", "Spin", "Max Sway", "Low Delta" }, "Custom")
+local pr_rage = p_pre:new_combobox("Ragebot Preset", { "Custom", "Safe", "Balanced", "Aggressive", "Hail Mary" }, "Custom")
 
-local p_mv      = ptab:new_section("Movement", "Right")
-local ms_speed_on = p_mv:new_toggle("Walk Speed", false)
-local ms_speed    = p_mv:new_slider("Walk Speed Value", 16, 60, 24, 0, "")
-local ms_jump_on  = p_mv:new_toggle("Jump Boost", false)
-local ms_jump     = p_mv:new_slider("Jump Boost Amount", 100, 300, 150, 0, "%")
+local p_log   = ptab:new_section("Shot Log & Panels", "Left")
+local pv_log   = p_log:new_toggle("On-Screen Shot Log", true)
+local pv_log_n = p_log:new_slider("Log Lines", 3, 12, 6, 0, "")
+local pv_log_t = p_log:new_slider("Log Time", 2, 15, 6, 0, " s")
+local pv_res   = p_log:new_toggle("Resolver Panel", false)
 
 do
-    local Workspace = game:GetService("Workspace")
-    local Players = game:GetService("Players")
-
-    -- keep the real gravity across script reloads
-    local origGravity = _G.__skeed_gravity
-    if type(origGravity) ~= "number" then
-        origGravity = Workspace.Gravity
-        _G.__skeed_gravity = origGravity
-    end
-
-    local function character()
-        local ok, c = pcall(function() return Players.LocalPlayer.Character end)
-        return ok and c or nil
-    end
-
-    local floating = false
-    local function setFloat(on)
-        if on then
-            pcall(function() Workspace.Gravity = fl_grav:get() end)
-        else
-            pcall(function() Workspace.Gravity = origGravity end)
-        end
-        floating = on
-    end
-
-    local savedHum = nil
-    local function restoreHum(hum)
-        if savedHum and hum then
-            pcall(function()
-                hum.WalkSpeed = savedHum.ws
-                hum.JumpPower = savedHum.jp
-                hum.JumpHeight = savedHum.jh
-            end)
-        end
-    end
-
-    local lastHum
-    onTick(function()
-        local want = fl_key:get()
-        if want then
-            -- gravity slider can change while floating, so keep it in sync
-            local okg, g = pcall(function() return Workspace.Gravity end)
-            if not floating or (okg and math.abs(g - fl_grav:get()) > 0.5) then setFloat(true) end
-
-            local cap = fl_cap:get()
-            if cap > 0 then
-                local c = character()
-                local root = c and c:FindFirstChild("HumanoidRootPart")
-                if root then
-                    pcall(function()
-                        local v = root.AssemblyLinearVelocity
-                        if v.Y < -cap then
-                            root.AssemblyLinearVelocity = Vector3.new(v.X, -cap, v.Z)
-                        end
-                    end)
-                end
-            end
-        elseif floating then
-            setFloat(false)
-        end
-
-        -- walk speed / jump boost, original values are remembered and put back
-        local c = character()
-        local hum = c and c:FindFirstChildOfClass("Humanoid")
-        if hum ~= lastHum then savedHum = nil; lastHum = hum end
-        if hum then
-            local any = ms_speed_on:get() or ms_jump_on:get()
-            if any and not savedHum then
-                savedHum = { ws = hum.WalkSpeed, jp = hum.JumpPower, jh = hum.JumpHeight }
-            end
-            if savedHum then
-                pcall(function()
-                    hum.WalkSpeed = ms_speed_on:get() and ms_speed:get() or savedHum.ws
-                    local mult = ms_jump_on:get() and (ms_jump:get() / 100) or 1
-                    hum.JumpPower = savedHum.jp * mult
-                    hum.JumpHeight = savedHum.jh * mult
-                end)
-                if not any then savedHum = nil end
-            end
-        end
+    -- every preset only sets the normal menu elements, so they stay editable afterwards
+    local AA_PRESETS = {
+        Legit      = { pitch = "Zero", yaw = 180, mod = "Disabled", sway = 0,  desync = 30, lag = 2,  var = 0 },
+        Jitter     = { pitch = "Down", yaw = 180, mod = "Center",   sway = 35, desync = 58, lag = 6,  var = 20 },
+        Spin       = { pitch = "Down", yaw = 180, mod = "Spin",     sway = 0,  desync = 58, lag = 8,  var = 20 },
+        ["Max Sway"] = { pitch = "Down", yaw = 180, mod = "Sway",   sway = 60, desync = 86, lag = 10, var = 30 },
+        ["Low Delta"] = { pitch = "Down", yaw = 180, mod = "Disabled", sway = 0, desync = 25, lag = 4, var = 10 },
+    }
+    pr_aa:set_callback(function()
+        local p = AA_PRESETS[pr_aa:get()]
+        if not p then return end
+        aa_pitch:set(p.pitch); aa_yaw:set(p.yaw); aa_mod:set(p.mod); aa_sway_amt:set(p.sway)
+        aa_desync:set(p.desync); aa_lag:set(p.lag); aa_lag_var:set(p.var)
+        notify("Preset", "Anti-aim preset: " .. pr_aa:get(), 2, false)
     end)
 
-    onEvent("shutdown", function()
-        setFloat(false)
-        restoreHum(lastHum)
+    local RAGE_PRESETS = {
+        Safe       = { dmg = 60, hc = 80, baim = 2, miss = 2 },
+        Balanced   = { dmg = 40, hc = 65, baim = 2, miss = 2 },
+        Aggressive = { dmg = 20, hc = 45, baim = 3, miss = 3 },
+        ["Hail Mary"] = { dmg = 1, hc = 20, baim = 5, miss = 5 },
+    }
+    pr_rage:set_callback(function()
+        local p = RAGE_PRESETS[pr_rage:get()]
+        if not p then return end
+        rb_dmg:set(p.dmg); rb_hc:set(p.hc); res_baim:set(p.baim); res_miss:set(p.miss)
+        notify("Preset", "Ragebot preset: " .. pr_rage:get(), 2, false)
+    end)
+
+    -- shot log
+    local lines = {}
+    local function push(text, col)
+        lines[#lines + 1] = { text = text, col = col, t = globals.realtime() }
+        while #lines > 12 do table.remove(lines, 1) end
+    end
+
+    onEvent("aim_hit", function(e)
+        push(string.format("Hit %s  %s  -%s", tostring(nameOf(e.target)), tostring(e.hitbox or "?"), tostring(e.damage or "?")), theme.good)
+    end)
+    onEvent("aim_miss", function(e)
+        push(string.format("Missed %s  %s  (%s)", tostring(nameOf(e.target)), tostring(e.hitbox or "?"), tostring(e.reason or "?")), theme.bad)
     end)
 
     onEvent("paint", function()
-        if not (fl_ind:get() and fl_key:get()) then return end
+        local doLog, doRes = pv_log:get(), pv_res:get()
+        if not (doLog or doRes) then return end
         local sw, sh = render.screen_size()
-        render.text(sw / 2, sh * 0.66, "FLOAT", theme.accent, 14, true, true)
-    end)
 
-    p_fl:new_button("Reset Gravity", function()
-        setFloat(false)
-        pcall(function() Workspace.Gravity = origGravity end)
-        notify("Float", "Gravity restored to " .. tostring(origGravity), 3, false)
+        if doLog and #lines > 0 then
+            local now = globals.realtime()
+            local life = pv_log_t:get()
+            local maxN = pv_log_n:get()
+            local x, y = sw - 280, 200
+            local shown = 0
+            for i = #lines, 1, -1 do
+                local ln = lines[i]
+                if now - ln.t <= life and shown < maxN then
+                    render.text(x, y + shown * 15, ln.text, ln.col, 13, true)
+                    shown = shown + 1
+                end
+            end
+        end
+
+        if doRes then
+            local x, y = 20, math.floor(sh * 0.28)
+            render.text(x, y, "RESOLVER", theme.accent, 13, true)
+            local rows = cached("res_panel", function()
+                local out = {}
+                for _, e in ipairs(entity.get_enemies()) do
+                    if entity.is_alive(e) then
+                        local st = targetState[keyOf(e)]
+                        local ang = st and BRUTE_ANGLES[st.stage] or 0
+                        out[#out + 1] = string.format("%s  %d deg  miss %d", tostring(nameOf(e)), ang, st and st.misses or 0)
+                    end
+                end
+                return out
+            end)
+            for i, txt in ipairs(rows) do
+                if i > 8 then break end
+                render.text(x, y + i * 15, txt, theme.text, 12, true)
+            end
+        end
     end)
 end
 
@@ -2001,7 +1983,7 @@ end
 local share_sec = ttab:new_section("Config Sharing", "Right")
 
 local CODE_PREFIX = "SKEED"
-local CODE_VERSION = 16
+local CODE_VERSION = 17
 
 -- every setting that gets exported (order matters, keep it stable!)
 -- keybinds are not included: their key choice isn't readable from Lua
@@ -2020,9 +2002,9 @@ local CFG = {
     pl_lethal, pl_lethal_h, pl_baim, pl_baim_hp, pl_air, pl_air_hc, pl_move, pl_move_spd, pl_move_hc,
     ph_dt, ph_speed, ph_enemies, ph_near, ph_target,
     ph_timer, ph_streak, ph_vitals, pf_rate, pf_hat,
-    fl_grav, fl_cap, fl_ind, ms_speed_on, ms_speed, ms_jump_on, ms_jump,
     wp_enable, wp_s_dmg, wp_s_hc, wp_p_dmg, wp_p_hc, wp_m_dmg, wp_m_hc, wp_o_dmg, wp_o_hc,
     ko_dmg_val, ko_hc_val, pl_close, pl_close_d, pl_close_h, pl_respawn, pl_lowhp, pl_lowhp_v,
+    pv_log, pv_log_n, pv_log_t, pv_res,
     ds_enable, ds_mode, ds_left, ds_right, ds_rand, ds_ticks, ds_ghost, ds_ind,
     h_cross, h_keys, h_hitlog, h_weapon,
     sp_enable, sp_speed, sp_maxspd, sp_scope, sp_adapt, sp_step,
